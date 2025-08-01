@@ -14,10 +14,21 @@ function init() {
 
     // 1) Create the world
     world = new World();
+    const TOLERANCE = 100;   // 0.1 world-units ≈ 10 cm if 1 unit = 1 m
 
+    
     // 2) Create the network first so we can hand it to the player
     network = new Network({
-        onPlayerUpdate: (x, y, z) => player.setPosition(x, y, z),
+        onPlayerUpdate: (x, y, z) => {
+            const current = player.getPosition();      // { x, y, z }
+
+            // If the vertical gap is tiny, preserve the local y to avoid jitter
+            const correctedX = Math.abs(x - current.x) > TOLERANCE ? x : current.x;
+            const correctedZ = Math.abs(z - current.z) > TOLERANCE ? z : current.z;
+            const correctedY = Math.abs(y - current.y) > TOLERANCE ? y : current.y;
+
+            player.setPosition(correctedX, correctedY, correctedZ);
+        },
         onNearbyChunks: (chunks, chunkSize, cx, cz) => {
             chunks.forEach(c =>
                 world.addOrUpdateChunk(c.x, c.z, chunkSize, c.vertices)
@@ -34,7 +45,7 @@ function init() {
     player = new Player(world.scene, world.camera, network);
 
     // 4) Connect and start the render loop
-    network.connect('wss://localhost:7121/ws');
+    network.connect('wss://singularityapi20250124105559.azurewebsites.net/ws');
     requestAnimationFrame(animate);
 }
 
