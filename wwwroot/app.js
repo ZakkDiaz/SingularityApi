@@ -4,51 +4,48 @@ import { Network } from './network.js';
 import { World } from './world.js';
 import { Player } from './player.js';
 
-let network, world, player;
+// One set of shared handles used by both init() and animate()
+let world;
+let network;
+let player;
 
 function init() {
-    log("Initializing app.js...");
+    log('Initializing app.js…');
 
-    // 1) Create the World
+    // 1) Create the world
     world = new World();
 
-    // 2) Create the Player
-    player = new Player(world.scene, world.camera);
-
-    // 3) Create the Network
+    // 2) Create the network first so we can hand it to the player
     network = new Network({
-        onPlayerUpdate: (x, y, z) => {
-            player.setPosition(x, y, z);
-        },
-        onNearbyChunks: (chunks, chunkSize, centerChunkX, centerChunkZ) => {
-            chunks.forEach((chunk) => {
-                world.addOrUpdateChunk(chunk.x, chunk.z, chunkSize, chunk.vertices);
-            });
+        onPlayerUpdate: (x, y, z) => player.setPosition(x, y, z),
+        onNearbyChunks: (chunks, chunkSize, cx, cz) => {
+            chunks.forEach(c =>
+                world.addOrUpdateChunk(c.x, c.z, chunkSize, c.vertices)
+            );
             world.cleanupDistantChunks(player.getPosition(), 128);
         },
         onSocketOpen: () => {
-            log("Socket is open => request initial chunks now.");
-            network.requestNearbyChunks(1);
-        },
+            log('Socket open → seeding initial area');
+            network.requestNearbyChunks(1);   // radius = 1 chunk
+        }
     });
 
-    // Connect to server
-    network.connect("wss://singularityapi20250124105559.azurewebsites.net//ws");
+    // 3) Create the player and give it the network so it can request chunks
+    player = new Player(world.scene, world.camera, network);
 
-    // Start the render loop
-    animate();
+    // 4) Connect and start the render loop
+    network.connect('wss://localhost:7121/ws');
+    requestAnimationFrame(animate);
 }
 
 function animate() {
     requestAnimationFrame(animate);
 
-    // 1) Update local movement
-    player.update(); // or a real ground function
-
-    // 2) Possibly send net movement each frame or in intervals
+    // Local movement
+    player.update();
     player.sendMovementToServerIfNeeded(network);
 
-    // 3) Render
+    // Render
     world.render();
 }
 

@@ -15,12 +15,12 @@
         this.heading = 0; // in radians
 
         // Movement config (BUMPED UP)
-        this.maxGroundSpeed = 0.05;   // was 0.02
+        this.maxGroundSpeed = 0.3;   // was 0.02
         this.groundAccel = 0.0006;   // was 0.0003
         this.groundDeaccel = 0.001;  // was 0.0005
-        this.jumpForce = 0.06;       // was 0.03
+        this.jumpForce = 0.16;       // was 0.03
         this.gravity = -0.002;       // same
-        this.rotSpeed = 0.004;       // same
+        this.rotSpeed = 0.008;       // same
 
         this.fallThreshold = 0.05;
         this.inAir = false;
@@ -38,13 +38,12 @@
         this.mesh = new THREE.Mesh(geometry, material);
         this.scene.add(this.mesh);
 
-        // If you're using physically-based lighting, 
-        // make sure there's a light somewhere in your scene as well
-
-        // For chunk loading
-        this.chunkSize = 16;       // how big each chunk is, side to side
-        this.loadRadius = 2;       // how many chunks around the player to load
-        this.loadedChunks = new Set(); // track which chunks are loaded
+        
+        this.chunkLoader = chunkLoader;   // holds the Network instance
+        this.chunkSize = 16;
+        this.loadRadius = 2;
+        this.lastChunkX = null;          // track previously-entered chunk coords
+        this.lastChunkZ = null;
 
         this.initKeyListeners();
     }
@@ -80,6 +79,7 @@
      * Call this every frame (e.g., in requestAnimationFrame).
      */
     update() {
+        console.log('update');
         // 1) Rotate heading if a/d pressed
         if (this.keys.a) {
             this.heading += this.rotSpeed;
@@ -135,7 +135,23 @@
         this.batchDz += this.vel.z;
 
         // 8) Request chunk loading if needed
-        this.loadChunksAroundPlayer();
+        this.checkChunkBoundary();
+    }
+
+    checkChunkBoundary() {
+        const cx = Math.floor(this.pos.x / this.chunkSize);
+        const cz = Math.floor(this.pos.z / this.chunkSize);
+        console.log('bound check', cx, cz)
+
+        if (cx !== this.lastChunkX || cz !== this.lastChunkZ) {
+            this.lastChunkX = cx;
+            this.lastChunkZ = cz;
+
+            // Ask the server for everything in our view radius
+            if (this.chunkLoader) {
+                this.chunkLoader.requestNearbyChunks(this.loadRadius);
+            }
+        }
     }
 
     handleGroundMovement() {
@@ -183,18 +199,18 @@
 
     sendMovementToServerIfNeeded(network) {
         const threshold = 0.1;
-        if (Math.abs(this.batchDx) > threshold || Math.abs(this.batchDz) > threshold) {
-            const msg = {
-                type: "playerMove",
-                dx: this.batchDx,
-                dz: this.batchDz,
-                y: this.pos.y
-            };
-            network.sendPlayerMove(msg);
+
+        const dx = this.batchDx;
+        const dz = this.batchDz;
+        const y = this.pos.y;
+
+        if (Math.abs(dx) > threshold || Math.abs(dz) > threshold) {
+            network.sendPlayerMove(dx, dz, y);
             this.batchDx = 0;
             this.batchDz = 0;
         }
     }
+
 
     setPosition(x, y, z) {
         this.pos.set(x, y, z);

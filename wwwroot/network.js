@@ -74,11 +74,17 @@ export class Network {
         this.socket.send(JSON.stringify(msg));
     }
 
-    sendPlayerMove(dx, dz) {
+    sendPlayerMove(dx, dz, y) {
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
             return;
         }
-        const msg = { type: "playerMove", dx, dz };
+        const msg = {
+            type: "playerMove",
+            dx,
+            dz,
+            y
+        };
+
         this.socket.send(JSON.stringify(msg));
     }
 }
