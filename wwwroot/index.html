@@ -1,0 +1,41 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>My 2.5D/3D Meme Coin Game</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #202030;
+            font-family: sans-serif;
+            color: #fff;
+        }
+
+        #log {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 300px;
+            height: 120px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.3);
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="log"></div>
+
+    <!-- 1) Three.js from a CDN (global THREE object) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.min.js"></script>
+
+    <!-- 2) Our modules -->
+    <script type="module" src="./utils.js"></script>
+    <script type="module" src="./network.js"></script>
+    <script type="module" src="./world.js"></script>
+    <script type="module" src="./player.js"></script>
+    <script type="module" src="./app.js"></script>
+</body>
+</html>
