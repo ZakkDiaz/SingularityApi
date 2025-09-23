@@ -179,8 +179,12 @@ export class Player {
             const normStrafe = strafe / magnitude;
             const headingSin = Math.sin(this.heading);
             const headingCos = Math.cos(this.heading);
-            moveX = headingSin * normForward * -1 + headingCos * normStrafe;
-            moveZ = headingCos * normForward + headingSin * normStrafe;
+            const forwardDirX = headingSin;
+            const forwardDirZ = headingCos;
+            const rightDirX = headingCos;
+            const rightDirZ = -headingSin;
+            moveX = forwardDirX * normForward + rightDirX * normStrafe;
+            moveZ = forwardDirZ * normForward + rightDirZ * normStrafe;
         }
 
         const targetSpeed = this.maxGroundSpeed * (this.keys.sprint ? this.sprintMultiplier : 1);
@@ -302,7 +306,7 @@ export class Player {
         }
         const origin = this.camera.position.clone();
         const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
-        const raycaster = new THREE.Raycaster(origin, direction, 0, 6);
+        const raycaster = new THREE.Raycaster(origin, direction, 0, 12);
         const objects = this.scene.children.filter(obj => obj.userData?.environmentId);
         const intersects = raycaster.intersectObjects(objects, true);
         if (intersects.length === 0) {
