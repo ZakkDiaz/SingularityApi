@@ -1,63 +1,121 @@
-﻿// app.js
+// app.js
 import { log } from './utils.js';
 import { Network } from './network.js';
 import { World } from './world.js';
 import { Player } from './player.js';
 
-// One set of shared handles used by both init() and animate()
 let world;
 let network;
 let player;
+let hudTime;
 
 function init() {
-    log('Initializing app.js…');
+    log('Initializing Singularity world…');
 
-    // 1) Create the world
     world = new World();
-    const TOLERANCE = 100;   // 0.1 world-units ≈ 10 cm if 1 unit = 1 m
+    hudTime = document.getElementById('timeOfDay');
 
-    
-    // 2) Create the network first so we can hand it to the player
     network = new Network({
-        onPlayerUpdate: (x, y, z) => {
-            const current = player.getPosition();      // { x, y, z }
-
-            // If the vertical gap is tiny, preserve the local y to avoid jitter
-            const correctedX = Math.abs(x - current.x) > TOLERANCE ? x : current.x;
-            const correctedZ = Math.abs(z - current.z) > TOLERANCE ? z : current.z;
-            const correctedY = Math.abs(y - current.y) > TOLERANCE ? y : current.y;
-
-            player.setPosition(correctedX, correctedY, correctedZ);
-        },
-        onNearbyChunks: (chunks, chunkSize, cx, cz) => {
-            chunks.forEach(c =>
-                world.addOrUpdateChunk(c.x, c.z, chunkSize, c.vertices)
-            );
-            world.cleanupDistantChunks(player.getPosition(), 128);
-        },
         onSocketOpen: () => {
-            log('Socket open → seeding initial area');
-            network.requestNearbyChunks(1);   // radius = 1 chunk
+            log('Socket open → requesting surrounding chunks');
+            network.requestNearbyChunks(2);
+        },
+        onInitialState: (state) => {
+            log(`Connected as ${state.playerId}`);
+            network.playerId = state.playerId;
+            world.setLocalPlayerId(state.playerId);
+            if (state.players) {
+                state.players.forEach(snapshot => world.upsertRemotePlayer(snapshot));
+            }
+            if (typeof state.timeOfDay === 'number') {
+                world.updateWorldTime(state.timeOfDay);
+                updateTimeHud(state.timeOfDay);
+            }
+            player.setPlayerId(state.playerId);
+        },
+        onPlayerState: (snapshot) => {
+            if (!snapshot) return;
+            if (snapshot.playerId === network.playerId) {
+                player.applyAuthoritativeState(snapshot);
+            } else {
+                world.upsertRemotePlayer(snapshot);
+            }
+        },
+        onPlayerJoined: (snapshot) => {
+            world.upsertRemotePlayer(snapshot);
+        },
+        onPlayerLeft: (playerId) => {
+            world.removeRemotePlayer(playerId);
+        },
+        onNearbyChunks: (chunks, chunkSize) => {
+            const effectiveChunkSize = chunkSize ?? player.getChunkSize();
+            chunks.forEach(chunk => {
+                world.addOrUpdateChunk(chunk.x, chunk.z, effectiveChunkSize, chunk.vertices);
+                world.updateEnvironmentForChunk(chunk.x, chunk.z, chunk.environmentObjects || []);
+            });
+            const cleanupDistance = (effectiveChunkSize ?? 16) * 8;
+            world.cleanupDistantChunks(player.getPosition(), cleanupDistance);
+            player.setChunkSize(effectiveChunkSize);
+        },
+        onEnvironmentUpdate: (environmentObject) => {
+            world.updateEnvironmentObject(environmentObject);
+        },
+        onWorldTick: (timeOfDay) => {
+            world.updateWorldTime(timeOfDay);
+            updateTimeHud(timeOfDay);
         }
     });
 
-    // 3) Create the player and give it the network so it can request chunks
-    player = new Player(world.scene, world.camera, network);
+    const pointerPrompt = document.getElementById('pointerPrompt');
+    player = new Player(world, network, () => {
+        if (pointerPrompt) {
+            pointerPrompt.classList.add('hidden');
+        }
+    });
 
-    // 4) Connect and start the render loop
-    network.connect('wss://singularityapi20250124105559.azurewebsites.net/ws');
+    const url = resolveWebSocketUrl();
+    network.connect(url);
+
     requestAnimationFrame(animate);
 }
 
 function animate() {
     requestAnimationFrame(animate);
+    if (player) {
+        player.update();
+        player.sendMovementToServerIfNeeded();
+    }
+    if (world) {
+        world.render();
+    }
+}
 
-    // Local movement
-    player.update();
-    player.sendMovementToServerIfNeeded(network);
+function resolveWebSocketUrl() {
+    if (window.SINGULARITY_WS_URL) {
+        return window.SINGULARITY_WS_URL;
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws`;
+}
 
-    // Render
-    world.render();
+function updateTimeHud(timeOfDay) {
+    if (!hudTime || typeof timeOfDay !== 'number') {
+        return;
+    }
+    const totalMinutes = Math.floor((timeOfDay % 1) * 24 * 60);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    const phase = getPhaseLabel(timeOfDay);
+    hudTime.textContent = `${hours.toString().padStart(2, '0')}:${minutes
+        .toString()
+        .padStart(2, '0')} · ${phase}`;
+}
+
+function getPhaseLabel(timeOfDay) {
+    if (timeOfDay < 0.2) return 'Dawn';
+    if (timeOfDay < 0.45) return 'Day';
+    if (timeOfDay < 0.7) return 'Dusk';
+    return 'Night';
 }
 
 window.addEventListener('load', init);

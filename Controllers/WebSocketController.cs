@@ -1,21 +1,41 @@
-﻿using System.Net.WebSockets;
+using System.Collections.Concurrent;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
+using System.Linq;
 
 namespace SingularityApi.Controllers
 {
     public static class WebSocketController
     {
-        // Cache chunk data so we don’t regenerate each time
-        private static readonly Dictionary<(int, int), List<Vertex>> ChunkCache =
-            new Dictionary<(int, int), List<Vertex>>();
-
-        // Track each player’s position
-        private static readonly Dictionary<string, PlayerState> Players =
-            new Dictionary<string, PlayerState>();
-
-        // Example generation settings
         private const int CHUNK_SIZE = 16;
+        private const int WORLD_SEED = 1337;
+        private const double MAX_MOVE_DISTANCE_SQ = 36.0;
+        private const int TERRAIN_OCTAVES = 5;
+        private const double TERRAIN_PERSISTENCE = 0.5;
+        private const double TERRAIN_BASE_FREQUENCY = 0.01;
+        private const double TERRAIN_BASE_AMPLITUDE = 8.0;
+        private const double DAY_LENGTH_SECONDS = 480.0;
+
+        private static readonly ConcurrentDictionary<(int, int), ChunkData> ChunkCache = new();
+        private static readonly ConcurrentDictionary<string, PlayerState> Players = new();
+        private static readonly ConcurrentDictionary<string, WebSocket> Connections = new();
+        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+
+        private static readonly Timer WorldTimer;
+        private static readonly object WorldClockLock = new();
+        private static double _timeOfDayFraction = 0.25;
+
+        static WebSocketController()
+        {
+            WorldTimer = new Timer(WorldTick, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        }
 
         public static async Task HandleWebsocket(this HttpContext context)
         {
@@ -27,225 +47,691 @@ namespace SingularityApi.Controllers
 
             using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
             var connectionId = Guid.NewGuid().ToString();
-            Console.WriteLine($"WebSocket connected! ID: {connectionId}");
+            Connections[connectionId] = webSocket;
 
-            // Initialize the player at (0,0)
-            Players[connectionId] = new PlayerState { X = 0, Y = 0, Z = 0 };
+            var spawnX = 0.0;
+            var spawnZ = 0.0;
+            var groundY = SampleTerrainHeight(spawnX, spawnZ);
+            var playerState = new PlayerState
+            {
+                Id = connectionId,
+                DisplayName = $"Explorer-{connectionId[..8]}",
+                X = spawnX,
+                Y = groundY + 2.0,
+                Z = spawnZ,
+                Heading = 0,
+                VelocityX = 0,
+                VelocityZ = 0,
+                LastUpdate = DateTime.UtcNow
+            };
+            Players[connectionId] = playerState;
+
+            await SendInitialStateAsync(webSocket, connectionId, context.RequestAborted);
+            await BroadcastJsonAsync(new { type = "playerJoined", player = CreatePlayerSnapshot(playerState) }, connectionId);
 
             var buffer = new byte[1024 * 8];
-            var cancel = context.RequestAborted;
 
-            while (!cancel.IsCancellationRequested && webSocket.State == WebSocketState.Open)
+            try
             {
-                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancel);
-                if (result.MessageType == WebSocketMessageType.Close)
+                while (!context.RequestAborted.IsCancellationRequested && webSocket.State == WebSocketState.Open)
                 {
-                    Console.WriteLine($"Client {connectionId} closed connection.");
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", cancel);
-                    Players.Remove(connectionId);
-                    break;
-                }
-
-                var clientMsg = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                try
-                {
-                    var jsonDoc = JsonDocument.Parse(clientMsg);
-                    var root = jsonDoc.RootElement;
-                    var msgType = root.GetProperty("type").GetString();
-
-                    switch (msgType)
+                    var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), context.RequestAborted);
+                    if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        case "playerMove":
-                            {
-                                // parse dx, dz
-                                double dx = root.GetProperty("dx").GetDouble();
-                                double dz = root.GetProperty("dz").GetDouble();
+                        break;
+                    }
 
-                                // optionally parse y from client if present
-                                double? clientY = null;
-                                if (root.TryGetProperty("y", out var yElement)
-                                    && yElement.ValueKind == JsonValueKind.Number)
-                                {
-                                    clientY = yElement.GetDouble();
-                                }
-
-                                if (Players.TryGetValue(connectionId, out var state))
-                                {
-                                    // update X,Z from dx, dz
-                                    state.X += dx;
-                                    state.Z += dz;
-
-                                    // Error tolerance for Y
-                                    if (clientY.HasValue)
-                                    {
-                                        double tolerance = 0.5; // allow up to 0.5 difference
-                                        double diff = Math.Abs(clientY.Value - state.Y);
-
-                                        if (diff < tolerance)
-                                        {
-                                            // accept client’s y
-                                            state.Y = clientY.Value;
-                                        }
-                                        else
-                                        {
-                                            // keep server’s Y 
-                                            // (or do partial approach, e.g. state.Y = Lerp(...))
-                                        }
-                                    }
-
-                                    // Respond with updated authoritative position
-                                    var moveResp = JsonSerializer.Serialize(new
-                                    {
-                                        type = "playerUpdate",
-                                        x = state.X,
-                                        y = state.Y,
-                                        z = state.Z
-                                    });
-                                    await webSocket.SendAsync(
-                                        new ArraySegment<byte>(Encoding.UTF8.GetBytes(moveResp)),
-                                        WebSocketMessageType.Text,
-                                        true,
-                                        cancel
-                                    );
-                                }
-                                break;
-                            }
-
-                        case "requestNearbyChunks":
-                            {
-                                int radius = 1;
-                                if (root.TryGetProperty("radius", out var rProp))
-                                    radius = rProp.GetInt32();
-
-                                if (Players.TryGetValue(connectionId, out var state))
-                                {
-                                    int chunkX = (int)Math.Floor(state.X / CHUNK_SIZE);
-                                    int chunkZ = (int)Math.Floor(state.Z / CHUNK_SIZE);
-
-                                    var chunkResponses = new List<object>();
-
-                                    for (int cx = chunkX - radius; cx <= chunkX + radius; cx++)
-                                    {
-                                        for (int cz = chunkZ - radius; cz <= chunkZ + radius; cz++)
-                                        {
-                                            var verts = GetOrGenerateChunk(cx, cz);
-                                            chunkResponses.Add(new
-                                            {
-                                                x = cx,
-                                                z = cz,
-                                                vertices = verts
-                                            });
-                                        }
-                                    }
-
-                                    var msgOut = JsonSerializer.Serialize(new
-                                    {
-                                        type = "nearbyChunksResponse",
-                                        centerChunkX = chunkX,
-                                        centerChunkZ = chunkZ,
-                                        chunkSize = CHUNK_SIZE,
-                                        chunks = chunkResponses
-                                    });
-                                    await webSocket.SendAsync(
-                                        new ArraySegment<byte>(Encoding.UTF8.GetBytes(msgOut)),
-                                        WebSocketMessageType.Text,
-                                        true,
-                                        cancel
-                                    );
-                                }
-                                break;
-                            }
-
-                        default:
-                            Console.WriteLine($"Unknown message: {msgType}");
-                            break;
+                    var clientMsg = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    try
+                    {
+                        using var jsonDoc = JsonDocument.Parse(clientMsg);
+                        await HandleClientMessage(connectionId, webSocket, jsonDoc.RootElement, context.RequestAborted);
+                    }
+                    catch (JsonException jsonEx)
+                    {
+                        Console.WriteLine($"Invalid JSON from {connectionId}: {jsonEx.Message}");
                     }
                 }
-                catch (Exception ex)
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (WebSocketException wsEx)
+            {
+                Console.WriteLine($"WebSocket error ({connectionId}): {wsEx.Message}");
+            }
+            finally
+            {
+                Players.TryRemove(connectionId, out _);
+                Connections.TryRemove(connectionId, out _);
+
+                if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
                 {
-                    Console.WriteLine($"Error parsing message from {connectionId}: {ex.Message}");
+                    try
+                    {
+                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                    }
+                    catch
+                    {
+                    }
                 }
+
+                await BroadcastJsonAsync(new { type = "playerLeft", playerId = connectionId }, connectionId);
             }
         }
 
-        // player state
+        private static async Task HandleClientMessage(string connectionId, WebSocket socket, JsonElement root, CancellationToken cancel)
+        {
+            if (!root.TryGetProperty("type", out var typeProperty))
+            {
+                return;
+            }
+
+            var msgType = typeProperty.GetString();
+            switch (msgType)
+            {
+                case "playerTransform":
+                    await HandlePlayerTransformAsync(connectionId, root);
+                    break;
+
+                case "requestNearbyChunks":
+                    await HandleChunkRequestAsync(connectionId, socket, root, cancel);
+                    break;
+
+                case "interact":
+                    await HandleInteractionAsync(root);
+                    break;
+
+                default:
+                    Console.WriteLine($"Unknown message type '{msgType}' from {connectionId}");
+                    break;
+            }
+        }
+
+        private static async Task HandlePlayerTransformAsync(string connectionId, JsonElement root)
+        {
+            if (!Players.TryGetValue(connectionId, out var state))
+            {
+                return;
+            }
+
+            if (!TryGetDouble(root, "x", out var x) ||
+                !TryGetDouble(root, "y", out var y) ||
+                !TryGetDouble(root, "z", out var z) ||
+                !TryGetDouble(root, "heading", out var heading))
+            {
+                return;
+            }
+
+            TryGetDouble(root, "velocityX", out var velocityX);
+            TryGetDouble(root, "velocityZ", out var velocityZ);
+
+            if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(z))
+            {
+                return;
+            }
+
+            var groundY = SampleTerrainHeight(x, z);
+            var maxHeight = groundY + 60.0;
+            var minHeight = groundY - 20.0;
+            y = Math.Clamp(y, minHeight, maxHeight);
+
+            lock (state)
+            {
+                var dx = x - state.X;
+                var dz = z - state.Z;
+                var distanceSq = dx * dx + dz * dz;
+                if (distanceSq > MAX_MOVE_DISTANCE_SQ)
+                {
+                    var distance = Math.Sqrt(distanceSq);
+                    if (distance > 0)
+                    {
+                        var scale = Math.Sqrt(MAX_MOVE_DISTANCE_SQ) / distance;
+                        x = state.X + dx * scale;
+                        z = state.Z + dz * scale;
+                    }
+                    else
+                    {
+                        x = state.X;
+                        z = state.Z;
+                    }
+                }
+
+                state.X = x;
+                state.Y = y;
+                state.Z = z;
+                state.Heading = heading;
+                state.VelocityX = velocityX;
+                state.VelocityZ = velocityZ;
+                state.LastUpdate = DateTime.UtcNow;
+            }
+
+            await BroadcastPlayerStateAsync(state);
+        }
+
+        private static async Task HandleChunkRequestAsync(string connectionId, WebSocket socket, JsonElement root, CancellationToken cancel)
+        {
+            if (!Players.TryGetValue(connectionId, out var state))
+            {
+                return;
+            }
+
+            var radius = 1;
+            if (root.TryGetProperty("radius", out var radiusProp) && radiusProp.ValueKind == JsonValueKind.Number)
+            {
+                radius = Math.Clamp(radiusProp.GetInt32(), 1, 4);
+            }
+
+            int chunkX;
+            int chunkZ;
+
+            lock (state)
+            {
+                chunkX = (int)Math.Floor(state.X / CHUNK_SIZE);
+                chunkZ = (int)Math.Floor(state.Z / CHUNK_SIZE);
+            }
+
+            var chunkResponses = new List<object>();
+
+            for (var cx = chunkX - radius; cx <= chunkX + radius; cx++)
+            {
+                for (var cz = chunkZ - radius; cz <= chunkZ + radius; cz++)
+                {
+                    var chunk = GetOrGenerateChunk(cx, cz);
+                    var environmentObjects = EnvironmentManager.CreateSnapshotForChunk(chunk);
+                    chunkResponses.Add(new
+                    {
+                        x = cx,
+                        z = cz,
+                        vertices = chunk.Vertices,
+                        environmentObjects
+                    });
+                }
+            }
+
+            var payload = new
+            {
+                type = "nearbyChunksResponse",
+                centerChunkX = chunkX,
+                centerChunkZ = chunkZ,
+                chunkSize = CHUNK_SIZE,
+                chunks = chunkResponses
+            };
+
+            await SendJsonAsync(socket, payload, cancel);
+        }
+
+        private static async Task HandleInteractionAsync(JsonElement root)
+        {
+            if (!root.TryGetProperty("environmentId", out var idProp))
+            {
+                return;
+            }
+
+            var environmentId = idProp.GetString();
+            if (string.IsNullOrWhiteSpace(environmentId))
+            {
+                return;
+            }
+
+            if (EnvironmentManager.TryInteract(environmentId, out var updated) && updated != null)
+            {
+                await BroadcastJsonAsync(new { type = "environmentUpdate", environmentObject = updated });
+            }
+        }
+
+        private static async Task SendInitialStateAsync(WebSocket socket, string connectionId, CancellationToken cancel)
+        {
+            var otherPlayers = Players.Values
+                .Where(p => p.Id != connectionId)
+                .Select(CreatePlayerSnapshot)
+                .ToList();
+
+            var payload = new
+            {
+                type = "initialState",
+                playerId = connectionId,
+                worldSeed = WORLD_SEED,
+                timeOfDay = GetTimeOfDayFraction(),
+                players = otherPlayers
+            };
+
+            await SendJsonAsync(socket, payload, cancel);
+        }
+
+        private static Task BroadcastPlayerStateAsync(PlayerState state)
+        {
+            var snapshot = CreatePlayerSnapshot(state);
+            return BroadcastJsonAsync(new { type = "playerState", player = snapshot });
+        }
+
+        private static PlayerSnapshot CreatePlayerSnapshot(PlayerState state)
+        {
+            lock (state)
+            {
+                return new PlayerSnapshot
+                {
+                    PlayerId = state.Id,
+                    DisplayName = state.DisplayName,
+                    X = state.X,
+                    Y = state.Y,
+                    Z = state.Z,
+                    Heading = state.Heading,
+                    VelocityX = state.VelocityX,
+                    VelocityZ = state.VelocityZ,
+                    LastServerUpdate = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                };
+            }
+        }
+        private static ChunkData GetOrGenerateChunk(int cx, int cz)
+        {
+            return ChunkCache.GetOrAdd((cx, cz), key => GenerateChunkData(key.Item1, key.Item2));
+        }
+
+        private static ChunkData GenerateChunkData(int cx, int cz)
+        {
+            var vertices = new List<Vertex>((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1));
+
+            for (var z = 0; z <= CHUNK_SIZE; z++)
+            {
+                for (var x = 0; x <= CHUNK_SIZE; x++)
+                {
+                    var worldX = cx * CHUNK_SIZE + x;
+                    var worldZ = cz * CHUNK_SIZE + z;
+                    var height = SampleTerrainHeight(worldX, worldZ);
+
+                    vertices.Add(new Vertex
+                    {
+                        X = worldX,
+                        Y = height,
+                        Z = worldZ
+                    });
+                }
+            }
+
+            var blueprints = GenerateEnvironmentBlueprints(cx, cz);
+
+            return new ChunkData(vertices, blueprints);
+        }
+
+        private static List<EnvironmentBlueprint> GenerateEnvironmentBlueprints(int cx, int cz)
+        {
+            var seed = HashCode.Combine(cx, cz, WORLD_SEED);
+            var rng = new Random(seed);
+            var count = rng.Next(4, 9);
+            var blueprints = new List<EnvironmentBlueprint>(count);
+
+            for (var i = 0; i < count; i++)
+            {
+                var offsetX = rng.NextDouble() * CHUNK_SIZE;
+                var offsetZ = rng.NextDouble() * CHUNK_SIZE;
+
+                var worldX = cx * CHUNK_SIZE + offsetX;
+                var worldZ = cz * CHUNK_SIZE + offsetZ;
+                var worldY = SampleTerrainHeight(worldX, worldZ);
+
+                var type = rng.NextDouble() < 0.7 ? "tree" : "crystal";
+
+                var blueprint = new EnvironmentBlueprint
+                {
+                    Id = $"env-{cx}-{cz}-{i}",
+                    ChunkX = cx,
+                    ChunkZ = cz,
+                    Type = type,
+                    X = worldX,
+                    Y = worldY,
+                    Z = worldZ,
+                    Rotation = rng.NextDouble() * Math.PI * 2
+                };
+
+                blueprints.Add(blueprint);
+                EnvironmentManager.EnsureBlueprint(blueprint);
+            }
+
+            return blueprints;
+        }
+
+        private static double SampleTerrainHeight(double x, double z)
+        {
+            return LayeredPerlin2D(x, z, TERRAIN_OCTAVES, TERRAIN_PERSISTENCE, TERRAIN_BASE_FREQUENCY, TERRAIN_BASE_AMPLITUDE);
+        }
+
+        private static double LayeredPerlin2D(double x, double y, int octaves, double persistence, double baseFrequency, double baseAmplitude)
+        {
+            var total = 0.0;
+            var frequency = baseFrequency;
+            var amplitude = baseAmplitude;
+
+            for (var i = 0; i < octaves; i++)
+            {
+                var noiseValue = Perlin.Noise2D(x * frequency, y * frequency);
+                total += noiseValue * amplitude;
+                frequency *= 2.0;
+                amplitude *= persistence;
+            }
+
+            return total;
+        }
+
+        private static Task SendJsonAsync(WebSocket socket, object payload, CancellationToken cancel)
+        {
+            var json = JsonSerializer.Serialize(payload, JsonOptions);
+            var buffer = Encoding.UTF8.GetBytes(json);
+            return socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cancel);
+        }
+
+        private static Task BroadcastJsonAsync(object payload, string? exceptId = null)
+        {
+            var json = JsonSerializer.Serialize(payload, JsonOptions);
+            var buffer = Encoding.UTF8.GetBytes(json);
+
+            var tasks = new List<Task>();
+            foreach (var kv in Connections)
+            {
+                if (exceptId != null && kv.Key == exceptId)
+                {
+                    continue;
+                }
+
+                var socket = kv.Value;
+                if (socket.State != WebSocketState.Open)
+                {
+                    continue;
+                }
+
+                tasks.Add(SendBufferSafeAsync(kv.Key, socket, buffer));
+            }
+
+            if (tasks.Count == 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            return Task.WhenAll(tasks);
+        }
+
+        private static async Task SendBufferSafeAsync(string connectionId, WebSocket socket, byte[] buffer)
+        {
+            try
+            {
+                await socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch
+            {
+                Connections.TryRemove(connectionId, out _);
+                Players.TryRemove(connectionId, out _);
+            }
+        }
+
+        private static void WorldTick(object? _)
+        {
+            if (Connections.IsEmpty)
+            {
+                return;
+            }
+
+            var respawns = EnvironmentManager.CollectRespawns();
+            if (respawns.Count > 0)
+            {
+                foreach (var obj in respawns)
+                {
+                    _ = BroadcastJsonAsync(new { type = "environmentUpdate", environmentObject = obj });
+                }
+            }
+
+            var timeOfDay = AdvanceWorldClock(TimeSpan.FromSeconds(1));
+            _ = BroadcastJsonAsync(new { type = "worldTick", timeOfDay });
+        }
+
+        private static double AdvanceWorldClock(TimeSpan delta)
+        {
+            lock (WorldClockLock)
+            {
+                var increment = delta.TotalSeconds / DAY_LENGTH_SECONDS;
+                _timeOfDayFraction = (_timeOfDayFraction + increment) % 1.0;
+                if (_timeOfDayFraction < 0)
+                {
+                    _timeOfDayFraction += 1.0;
+                }
+
+                return _timeOfDayFraction;
+            }
+        }
+
+        private static double GetTimeOfDayFraction()
+        {
+            lock (WorldClockLock)
+            {
+                return _timeOfDayFraction;
+            }
+        }
+
+        private static bool TryGetDouble(JsonElement root, string propertyName, out double value)
+        {
+            value = 0;
+            if (root.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.Number)
+            {
+                value = prop.GetDouble();
+                return true;
+            }
+
+            return false;
+        }
         private class PlayerState
+        {
+            public string Id { get; set; } = string.Empty;
+            public string DisplayName { get; set; } = string.Empty;
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Z { get; set; }
+            public double Heading { get; set; }
+            public double VelocityX { get; set; }
+            public double VelocityZ { get; set; }
+            public DateTime LastUpdate { get; set; }
+        }
+
+        private class PlayerSnapshot
+        {
+            public string PlayerId { get; set; } = string.Empty;
+            public string DisplayName { get; set; } = string.Empty;
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Z { get; set; }
+            public double Heading { get; set; }
+            public double VelocityX { get; set; }
+            public double VelocityZ { get; set; }
+            public long LastServerUpdate { get; set; }
+        }
+
+        public class Vertex
         {
             public double X { get; set; }
             public double Y { get; set; }
             public double Z { get; set; }
         }
 
-        // chunk vertex
-        public class Vertex
+        private class ChunkData
         {
-            public double x { get; set; }
-            public double y { get; set; }
-            public double z { get; set; }
+            public ChunkData(List<Vertex> vertices, List<EnvironmentBlueprint> environmentBlueprints)
+            {
+                Vertices = vertices;
+                EnvironmentBlueprints = environmentBlueprints;
+            }
+
+            public List<Vertex> Vertices { get; }
+            public List<EnvironmentBlueprint> EnvironmentBlueprints { get; }
         }
 
-        private static List<Vertex> GetOrGenerateChunk(int cx, int cz)
+        private class EnvironmentBlueprint
         {
-            if (ChunkCache.TryGetValue((cx, cz), out var existing))
-                return existing;
+            public string Id { get; set; } = string.Empty;
+            public int ChunkX { get; set; }
+            public int ChunkZ { get; set; }
+            public string Type { get; set; } = "tree";
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Z { get; set; }
+            public double Rotation { get; set; }
+        }
 
-            var list = new List<Vertex>((CHUNK_SIZE + 1) * (CHUNK_SIZE + 1));
+        private class EnvironmentObjectDto
+        {
+            public string Id { get; set; } = string.Empty;
+            public int ChunkX { get; set; }
+            public int ChunkZ { get; set; }
+            public string Type { get; set; } = string.Empty;
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Z { get; set; }
+            public double Rotation { get; set; }
+            public EnvironmentStateDto State { get; set; } = new EnvironmentStateDto();
+        }
 
-            // Example parameters for layered Perlin
-            int octaves = 5;
-            double persistence = 0.5;
-            double baseFreq = 0.01;
-            double baseAmp = 8.0; // how tall the terrain can get, for example
+        private class EnvironmentStateDto
+        {
+            public bool IsActive { get; set; }
+            public double CooldownRemaining { get; set; }
+        }
 
-            for (int z = 0; z <= CHUNK_SIZE; z++)
+        private static class EnvironmentManager
+        {
+            private static readonly ConcurrentDictionary<string, EnvironmentBlueprint> Blueprints = new();
+            private static readonly ConcurrentDictionary<string, EnvironmentRuntimeState> States = new();
+
+            public static void EnsureBlueprint(EnvironmentBlueprint blueprint)
             {
-                for (int x = 0; x <= CHUNK_SIZE; x++)
+                Blueprints.AddOrUpdate(blueprint.Id, blueprint, (_, existing) => existing);
+                States.GetOrAdd(blueprint.Id, _ => new EnvironmentRuntimeState());
+            }
+
+            public static List<EnvironmentObjectDto> CreateSnapshotForChunk(ChunkData chunk)
+            {
+                var list = new List<EnvironmentObjectDto>(chunk.EnvironmentBlueprints.Count);
+                foreach (var blueprint in chunk.EnvironmentBlueprints)
                 {
-                    double worldX = cx * CHUNK_SIZE + x;
-                    double worldZ = cz * CHUNK_SIZE + z;
-
-                    // We pass world coords into layered Perlin
-                    double h = LayeredPerlin2D(worldX, worldZ, octaves, persistence, baseFreq, baseAmp);
-
-                    // optional: shift from [-some..some] to [0..someLarge]
-                    // if Noise2D is ~[-1..1], and we do 5 octaves, total might be in e.g. [-someVal..someVal].
-                    // If you want to ensure no negative: do e.g. h = (h+someOffset).
-                    // Or just accept negative as "below sea level" if you want water.
-
-                    list.Add(new Vertex
+                    var snapshot = BuildSnapshot(blueprint.Id);
+                    if (snapshot != null)
                     {
-                        x = worldX,
-                        y = h,
-                        z = worldZ
-                    });
+                        list.Add(snapshot);
+                    }
                 }
+
+                return list;
             }
 
-            ChunkCache[(cx, cz)] = list;
-            return list;
-        }
-
-        private static double LayeredPerlin2D(double x, double y, int octaves,
-                                      double persistence,
-                                      double baseFrequency,
-                                      double baseAmplitude)
-        {
-            double total = 0;
-            double frequency = baseFrequency;
-            double amplitude = baseAmplitude;
-
-            for (int i = 0; i < octaves; i++)
+            public static bool TryInteract(string environmentId, out EnvironmentObjectDto? updated)
             {
-                double noiseValue = Perlin.Noise2D(x * frequency, y * frequency);
-                // noiseValue is ~[-1..1]. 
-                // scale it by amplitude
-                total += noiseValue * amplitude;
+                updated = null;
+                if (!States.TryGetValue(environmentId, out var state))
+                {
+                    return false;
+                }
 
-                frequency *= 2.0;      // next octave: double freq
-                amplitude *= persistence; // reduce amplitude
+                lock (state)
+                {
+                    if (!state.IsActive)
+                    {
+                        if (state.RespawnAt.HasValue && state.RespawnAt.Value > DateTime.UtcNow)
+                        {
+                            return false;
+                        }
+
+                        state.IsActive = true;
+                        state.RespawnAt = null;
+                    }
+
+                    state.IsActive = false;
+                    state.RespawnAt = DateTime.UtcNow.AddSeconds(12);
+                }
+
+                updated = BuildSnapshot(environmentId);
+                return updated != null;
             }
 
-            return total;
+            public static List<EnvironmentObjectDto> CollectRespawns()
+            {
+                var result = new List<EnvironmentObjectDto>();
+
+                foreach (var kvp in States)
+                {
+                    var state = kvp.Value;
+                    var changed = false;
+
+                    lock (state)
+                    {
+                        if (!state.IsActive && state.RespawnAt.HasValue && state.RespawnAt.Value <= DateTime.UtcNow)
+                        {
+                            state.IsActive = true;
+                            state.RespawnAt = null;
+                            changed = true;
+                        }
+                    }
+
+                    if (changed)
+                    {
+                        var snapshot = BuildSnapshot(kvp.Key);
+                        if (snapshot != null)
+                        {
+                            result.Add(snapshot);
+                        }
+                    }
+                }
+
+                return result;
+            }
+
+            private static EnvironmentObjectDto? BuildSnapshot(string environmentId)
+            {
+                if (!Blueprints.TryGetValue(environmentId, out var blueprint))
+                {
+                    return null;
+                }
+
+                if (!States.TryGetValue(environmentId, out var runtime))
+                {
+                    return null;
+                }
+
+                bool isActive;
+                double cooldownRemaining;
+
+                lock (runtime)
+                {
+                    if (!runtime.IsActive && runtime.RespawnAt.HasValue && runtime.RespawnAt.Value <= DateTime.UtcNow)
+                    {
+                        runtime.IsActive = true;
+                        runtime.RespawnAt = null;
+                    }
+
+                    isActive = runtime.IsActive;
+                    cooldownRemaining = runtime.RespawnAt.HasValue
+                        ? Math.Max(0, (runtime.RespawnAt.Value - DateTime.UtcNow).TotalSeconds)
+                        : 0;
+                }
+
+                return new EnvironmentObjectDto
+                {
+                    Id = blueprint.Id,
+                    ChunkX = blueprint.ChunkX,
+                    ChunkZ = blueprint.ChunkZ,
+                    Type = blueprint.Type,
+                    X = blueprint.X,
+                    Y = blueprint.Y,
+                    Z = blueprint.Z,
+                    Rotation = blueprint.Rotation,
+                    State = new EnvironmentStateDto
+                    {
+                        IsActive = isActive,
+                        CooldownRemaining = cooldownRemaining
+                    }
+                };
+            }
+
+            private class EnvironmentRuntimeState
+            {
+                public bool IsActive { get; set; } = true;
+                public DateTime? RespawnAt { get; set; }
+            }
         }
     }
 }

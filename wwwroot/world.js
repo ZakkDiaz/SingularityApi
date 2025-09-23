@@ -1,43 +1,70 @@
-﻿// world.js
+// world.js
 import { log } from './utils.js';
+
+const CHUNK_MATERIAL = new THREE.MeshStandardMaterial({
+    color: 0x6ea07c,
+    roughness: 0.85,
+    metalness: 0.0,
+    flatShading: false
+});
 
 export class World {
     constructor() {
-        // 1) Scene
         this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x1e2232);
+        this.scene.fog = new THREE.FogExp2(0x1e2232, 0.003);
 
-        // 2) Camera
-        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
-        this.camera.position.set(0, 5, 10);
+        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 3000);
+        this.camera.position.set(0, 8, 12);
 
-        // 3) Lights
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-        dirLight.position.set(30, 50, 30);
-        this.scene.add(dirLight);
+        this.clock = new THREE.Clock();
+        this.lastDelta = 0.016;
 
-        const ambLight = new THREE.AmbientLight(0xffffff, 0.3);
-        this.scene.add(ambLight);
-
-        // 4) Renderer
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        this.renderer.outputEncoding = THREE.sRGBEncoding;
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.setPixelRatio(window.devicePixelRatio || 1);
         this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.shadowMap.enabled = true;
         document.body.appendChild(this.renderer.domElement);
 
-        // 5) chunk meshes
-        this.chunkMeshes = new Map();
+        this.directionalLight = new THREE.DirectionalLight(0xf7f5e9, 0.9);
+        this.directionalLight.position.set(60, 100, 40);
+        this.directionalLight.castShadow = true;
+        this.scene.add(this.directionalLight);
 
-        // handle resize
-        window.addEventListener('resize', () => {
-            this.camera.aspect = window.innerWidth / window.innerHeight;
-            this.camera.updateProjectionMatrix();
-            this.renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+        this.ambientLight = new THREE.HemisphereLight(0x9cc4ff, 0x1a2233, 0.35);
+        this.scene.add(this.ambientLight);
+
+        this.chunkMeshes = new Map();
+        this.environmentMeshes = new Map();
+        this.chunkEnvironmentIndex = new Map();
+        this.remotePlayers = new Map();
+        this.localPlayerId = null;
+        this.environmentPulse = 0;
+
+        window.addEventListener('resize', () => this.handleResize());
+        this.handleResize();
+    }
+
+    handleResize() {
+        this.camera.aspect = window.innerWidth / window.innerHeight;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    setLocalPlayerId(id) {
+        this.localPlayerId = id;
+    }
+
+    getDeltaSeconds() {
+        return this.lastDelta;
     }
 
     addOrUpdateChunk(cx, cz, chunkSize, vertexList) {
         const totalVerts = (chunkSize + 1) * (chunkSize + 1);
-        if (vertexList.length !== totalVerts) {
-            log(`Chunk mismatch: got ${vertexList.length} vs expected ${totalVerts} for chunk (${cx},${cz})`);
+        if (!vertexList || vertexList.length !== totalVerts) {
+            log(`Chunk mismatch: got ${vertexList?.length} vs expected ${totalVerts} for chunk (${cx},${cz})`);
             return;
         }
 
@@ -61,18 +88,15 @@ export class World {
         }
 
         const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
         geometry.computeVertexNormals();
 
-        const material = new THREE.MeshLambertMaterial({
-            color: 0x88cc88,
-            side: THREE.DoubleSide
-        });
-
-        const mesh = new THREE.Mesh(geometry, material);
+        const mesh = new THREE.Mesh(geometry, CHUNK_MATERIAL.clone());
+        mesh.receiveShadow = true;
         mesh.userData.cx = cx;
         mesh.userData.cz = cz;
+        mesh.userData.isTerrain = true;
 
         const chunkKey = `${cx},${cz}`;
         if (this.chunkMeshes.has(chunkKey)) {
@@ -80,6 +104,135 @@ export class World {
         }
         this.chunkMeshes.set(chunkKey, mesh);
         this.scene.add(mesh);
+    }
+
+    updateEnvironmentForChunk(cx, cz, objects) {
+        const chunkKey = `${cx},${cz}`;
+        const existing = this.chunkEnvironmentIndex.get(chunkKey) || new Set();
+        const nextIds = new Set();
+
+        objects.forEach(obj => {
+            if (!obj) return;
+            nextIds.add(obj.id);
+            this.createOrUpdateEnvironmentObject(obj);
+        });
+
+        existing.forEach(id => {
+            if (!nextIds.has(id)) {
+                this.removeEnvironmentObject(id);
+            }
+        });
+
+        this.chunkEnvironmentIndex.set(chunkKey, nextIds);
+    }
+
+    updateEnvironmentObject(objectData) {
+        if (!objectData) {
+            return;
+        }
+        this.createOrUpdateEnvironmentObject(objectData);
+    }
+
+    createOrUpdateEnvironmentObject(data) {
+        const chunkKey = `${data.chunkX},${data.chunkZ}`;
+        let record = this.environmentMeshes.get(data.id);
+
+        if (!record) {
+            const mesh = this.buildEnvironmentMesh(data.type);
+            mesh.userData.environmentId = data.id;
+            mesh.userData.chunkKey = chunkKey;
+            mesh.userData.environmentType = data.type;
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            this.scene.add(mesh);
+            record = { mesh };
+            this.environmentMeshes.set(data.id, record);
+
+            if (!this.chunkEnvironmentIndex.has(chunkKey)) {
+                this.chunkEnvironmentIndex.set(chunkKey, new Set());
+            }
+            this.chunkEnvironmentIndex.get(chunkKey).add(data.id);
+
+            mesh.traverse(node => {
+                node.userData = node.userData || {};
+                node.userData.environmentId = data.id;
+                node.userData.chunkKey = chunkKey;
+                node.userData.environmentType = data.type;
+            });
+        }
+
+        record.mesh.position.set(data.x, data.y, data.z);
+        record.mesh.rotation.y = data.rotation ?? 0;
+        this.applyEnvironmentState(record.mesh, data.state);
+    }
+
+    buildEnvironmentMesh(type) {
+        if (type === 'crystal') {
+            const geometry = new THREE.IcosahedronGeometry(0.6, 0);
+            const material = new THREE.MeshStandardMaterial({
+                color: 0x86d5ff,
+                emissive: 0x1f5b8c,
+                emissiveIntensity: 0.6,
+                roughness: 0.2,
+                metalness: 0.1,
+                transparent: true,
+                opacity: 0.95
+            });
+            return new THREE.Mesh(geometry, material);
+        }
+
+        const group = new THREE.Group();
+        const trunkGeometry = new THREE.CylinderGeometry(0.15, 0.22, 2.4, 6);
+        const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x5c3b2e, roughness: 0.9 });
+        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+        trunk.position.y = 1.2;
+        trunk.castShadow = true;
+        trunk.receiveShadow = true;
+
+        const canopyGeometry = new THREE.ConeGeometry(1.2, 2.4, 8, 1);
+        const canopyMaterial = new THREE.MeshStandardMaterial({ color: 0x3f8152, roughness: 0.6 });
+        const canopy = new THREE.Mesh(canopyGeometry, canopyMaterial);
+        canopy.position.y = 2.6;
+        canopy.castShadow = true;
+
+        group.add(trunk);
+        group.add(canopy);
+        return group;
+    }
+
+    applyEnvironmentState(mesh, state) {
+        if (!state) {
+            mesh.visible = true;
+            return;
+        }
+
+        mesh.visible = state.isActive;
+        const cooldown = state.cooldownRemaining ?? 0;
+        mesh.userData.cooldown = cooldown;
+        mesh.userData.isActive = state.isActive;
+
+        if (mesh.material && mesh.material.emissive) {
+            mesh.material.emissiveIntensity = state.isActive ? 0.6 : 0.1;
+            mesh.material.opacity = state.isActive ? 0.95 : 0.35;
+        }
+
+        mesh.scale.setScalar(state.isActive ? 1 : 0.6);
+    }
+
+    removeEnvironmentObject(id) {
+        const record = this.environmentMeshes.get(id);
+        if (!record) {
+            return;
+        }
+        if (record.mesh.parent) {
+            record.mesh.parent.remove(record.mesh);
+        }
+        this.environmentMeshes.delete(id);
+
+        const chunkKey = record.mesh.userData.chunkKey;
+        if (chunkKey && this.chunkEnvironmentIndex.has(chunkKey)) {
+            this.chunkEnvironmentIndex.get(chunkKey).delete(id);
+        }
     }
 
     cleanupDistantChunks(playerPos, maxDist) {
@@ -94,13 +247,112 @@ export class World {
             if (dist > maxDist) {
                 this.scene.remove(mesh);
                 this.chunkMeshes.delete(key);
-                // log(`Removed chunk ${key} at dist ${dist.toFixed(2)}`);
+                this.removeEnvironmentObjectsForChunk(key);
             }
         });
     }
 
-    // Called each frame
+    removeEnvironmentObjectsForChunk(chunkKey) {
+        if (!this.chunkEnvironmentIndex.has(chunkKey)) {
+            return;
+        }
+        const ids = Array.from(this.chunkEnvironmentIndex.get(chunkKey));
+        ids.forEach(id => this.removeEnvironmentObject(id));
+        this.chunkEnvironmentIndex.delete(chunkKey);
+    }
+
+    upsertRemotePlayer(snapshot) {
+        if (!snapshot || !snapshot.playerId || snapshot.playerId === this.localPlayerId) {
+            return;
+        }
+
+        let record = this.remotePlayers.get(snapshot.playerId);
+        if (!record) {
+            const group = this.buildRemoteAvatar(snapshot.displayName);
+            this.scene.add(group);
+            record = {
+                mesh: group,
+                targetPosition: new THREE.Vector3(),
+                targetHeading: 0
+            };
+            this.remotePlayers.set(snapshot.playerId, record);
+        }
+
+        record.targetPosition.set(snapshot.x, snapshot.y, snapshot.z);
+        record.targetHeading = snapshot.heading ?? 0;
+        record.mesh.userData.displayName = snapshot.displayName ?? 'Wanderer';
+    }
+
+    buildRemoteAvatar(displayName) {
+        const group = new THREE.Group();
+        const bodyGeo = new THREE.CapsuleGeometry(0.35, 1.1, 8, 16);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x4a8fb2, metalness: 0.1, roughness: 0.5 });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.castShadow = true;
+        body.receiveShadow = true;
+        group.add(body);
+
+        const visorGeo = new THREE.SphereGeometry(0.28, 12, 12, 0, Math.PI * 2, 0, Math.PI / 1.2);
+        const visorMat = new THREE.MeshStandardMaterial({ color: 0x1e2b44, metalness: 0.4, roughness: 0.3 });
+        const visor = new THREE.Mesh(visorGeo, visorMat);
+        visor.position.set(0, 0.5, 0.35);
+        group.add(visor);
+
+        return group;
+    }
+
+    removeRemotePlayer(playerId) {
+        const record = this.remotePlayers.get(playerId);
+        if (!record) {
+            return;
+        }
+        if (record.mesh.parent) {
+            record.mesh.parent.remove(record.mesh);
+        }
+        this.remotePlayers.delete(playerId);
+    }
+
+    updateWorldTime(timeOfDay) {
+        const angle = timeOfDay * Math.PI * 2;
+        const sunHeight = Math.cos(angle);
+        const sunIntensity = THREE.MathUtils.clamp(sunHeight * 0.75 + 0.35, 0.15, 1.25);
+
+        this.directionalLight.position.set(Math.sin(angle) * 120, sunHeight * 120, Math.cos(angle * 0.5) * 120);
+        this.directionalLight.intensity = sunIntensity;
+
+        const ambient = THREE.MathUtils.clamp(0.25 + (sunHeight + 1) * 0.25, 0.15, 0.6);
+        this.ambientLight.intensity = ambient;
+        this.ambientLight.color.setHSL(0.58, 0.55, 0.5 + ambient * 0.3);
+
+        const background = new THREE.Color().setHSL(0.62, 0.45, 0.28 + sunIntensity * 0.3);
+        this.scene.background.copy(background);
+        this.scene.fog.color.copy(background);
+    }
+
     render() {
+        const delta = this.clock.getDelta();
+        this.lastDelta = delta;
+        this.environmentPulse += delta;
+
+        this.remotePlayers.forEach(record => {
+            record.mesh.position.lerp(record.targetPosition, 1 - Math.exp(-delta * 6));
+            const current = record.mesh.rotation.y;
+            const target = record.targetHeading;
+            record.mesh.rotation.y = THREE.MathUtils.lerp(current, target, 1 - Math.exp(-delta * 6));
+        });
+
+        this.environmentMeshes.forEach(({ mesh }) => {
+            if (!mesh.userData.isActive) {
+                return;
+            }
+            if (mesh.material && mesh.material.emissiveIntensity) {
+                mesh.material.emissiveIntensity = 0.5 + Math.sin(this.environmentPulse * 2.5) * 0.2;
+            }
+            if (mesh.userData.environmentType === 'crystal') {
+                mesh.rotation.y += delta * 0.6;
+            }
+        });
+
         this.renderer.render(this.scene, this.camera);
     }
 }

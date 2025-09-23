@@ -1,264 +1,362 @@
-﻿export class Player {
-    constructor(scene, camera, chunkLoader) {
-        this.scene = scene;
-        this.camera = camera;
+const FORWARD_KEYS = new Set(['w', 'ArrowUp']);
+const BACKWARD_KEYS = new Set(['s', 'ArrowDown']);
+const LEFT_KEYS = new Set(['a', 'ArrowLeft']);
+const RIGHT_KEYS = new Set(['d', 'ArrowRight']);
 
-        // Optional: chunkLoader could be some manager or function you pass in 
-        // that knows how to "load or request chunk data" from the server.
-        // We'll call chunkLoader.loadChunk(cx, cz) if we need new chunks.
-        this.chunkLoader = chunkLoader;
+export class Player {
+    constructor(world, network, onPointerAcquired) {
+        this.world = world;
+        this.scene = world.scene;
+        this.camera = world.camera;
+        this.network = network;
+        this.onPointerAcquired = onPointerAcquired;
 
-        // Position & velocity
-        this.pos = new THREE.Vector3(0, 0, 0);
-        this.vel = new THREE.Vector3(0, 0, 0);
+        this.playerId = null;
+        this.pos = new THREE.Vector3(0, 12, 0);
+        this.vel = new THREE.Vector3();
+        this.heading = 0;
+        this.cameraPitch = -0.25;
+        this.cameraDistance = 6.5;
+        this.cameraHeight = 2.0;
 
-        this.heading = 0; // in radians
+        this.maxGroundSpeed = 6.5; // units per second
+        this.sprintMultiplier = 1.7;
+        this.groundAccel = 24.0;
+        this.groundDeaccel = 16.0;
+        this.airAccel = 6.0;
+        this.jumpForce = 6.0;
+        this.gravity = -18.0;
+        this.lookSensitivity = 0.0028;
 
-        // Movement config (BUMPED UP)
-        this.maxGroundSpeed = 0.3;   // was 0.02
-        this.groundAccel = 0.0006;   // was 0.0003
-        this.groundDeaccel = 0.001;  // was 0.0005
-        this.jumpForce = 0.16;       // was 0.03
-        this.gravity = -0.002;       // same
-        this.rotSpeed = 0.008;       // same
+        this.inAir = true;
+        this.keys = {
+            forward: false,
+            backward: false,
+            left: false,
+            right: false,
+            jump: false,
+            sprint: false
+        };
 
-        this.fallThreshold = 0.05;
-        this.inAir = false;
+        this.pendingInteraction = false;
+        this.interactCooldown = 0;
+        this.jumpRequested = false;
 
-        // Key states
-        this.keys = { w: false, s: false, a: false, d: false, jump: false };
-
-        // For server net updates
-        this.batchDx = 0;
-        this.batchDz = 0;
-
-        // Create a sphere mesh for the character
-        const geometry = new THREE.SphereGeometry(0.3, 16, 16);
-        const material = new THREE.MeshStandardMaterial({ color: 0xff0000 });
-        this.mesh = new THREE.Mesh(geometry, material);
-        this.scene.add(this.mesh);
-
-        
-        this.chunkLoader = chunkLoader;   // holds the Network instance
         this.chunkSize = 16;
         this.loadRadius = 2;
-        this.lastChunkX = null;          // track previously-entered chunk coords
+        this.lastChunkX = null;
         this.lastChunkZ = null;
 
-        this.initKeyListeners();
+        this.lastSentPosition = this.pos.clone();
+        this.lastSentHeading = this.heading;
+        this.lastNetworkSend = 0;
+
+        this.pointerLocked = false;
+        this.lastUpdateTime = performance.now();
+
+        this.mesh = this.buildLocalAvatar();
+        this.mesh.position.copy(this.pos);
+        this.scene.add(this.mesh);
+
+        this.initInputListeners();
     }
 
-    initKeyListeners() {
-        window.addEventListener('keydown', (evt) => {
-            // Prevent default so arrow keys/space won't scroll the page
-            if (['w', 's', 'a', 'd', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(evt.key)) {
-                evt.preventDefault();
-            }
+    buildLocalAvatar() {
+        const group = new THREE.Group();
 
-            switch (evt.key) {
-                case 'w': case 'ArrowUp': this.keys.w = true; break;
-                case 's': case 'ArrowDown': this.keys.s = true; break;
-                case 'a': case 'ArrowLeft': this.keys.a = true; break;
-                case 'd': case 'ArrowRight': this.keys.d = true; break;
-                case ' ': this.keys.jump = true; break;
+        const bodyGeo = new THREE.CapsuleGeometry(0.36, 1.2, 12, 16);
+        const bodyMat = new THREE.MeshStandardMaterial({
+            color: 0xfca17d,
+            roughness: 0.4,
+            metalness: 0.2
+        });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.castShadow = true;
+        body.receiveShadow = true;
+        group.add(body);
+
+        const accentsGeo = new THREE.TorusGeometry(0.55, 0.08, 12, 32);
+        const accentsMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1, metalness: 0.6 });
+        const accents = new THREE.Mesh(accentsGeo, accentsMat);
+        accents.rotation.x = Math.PI / 2;
+        accents.position.y = 0.4;
+        group.add(accents);
+
+        group.userData.ignoreGroundRay = true;
+        return group;
+    }
+
+    initInputListeners() {
+        window.addEventListener('keydown', (evt) => {
+            if (evt.repeat) return;
+            if (FORWARD_KEYS.has(evt.key)) this.keys.forward = true;
+            if (BACKWARD_KEYS.has(evt.key)) this.keys.backward = true;
+            if (LEFT_KEYS.has(evt.key)) this.keys.left = true;
+            if (RIGHT_KEYS.has(evt.key)) this.keys.right = true;
+            if (evt.key === ' ') {
+                this.keys.jump = true;
+                this.jumpRequested = true;
             }
+            if (evt.key === 'Shift') this.keys.sprint = true;
+            if (evt.key.toLowerCase() === 'e') this.pendingInteraction = true;
         });
 
         window.addEventListener('keyup', (evt) => {
-            switch (evt.key) {
-                case 'w': case 'ArrowUp': this.keys.w = false; break;
-                case 's': case 'ArrowDown': this.keys.s = false; break;
-                case 'a': case 'ArrowLeft': this.keys.a = false; break;
-                case 'd': case 'ArrowRight': this.keys.d = false; break;
-                case ' ': this.keys.jump = false; break;
+            if (FORWARD_KEYS.has(evt.key)) this.keys.forward = false;
+            if (BACKWARD_KEYS.has(evt.key)) this.keys.backward = false;
+            if (LEFT_KEYS.has(evt.key)) this.keys.left = false;
+            if (RIGHT_KEYS.has(evt.key)) this.keys.right = false;
+            if (evt.key === ' ') {
+                this.keys.jump = false;
+                this.jumpRequested = false;
             }
+            if (evt.key === 'Shift') this.keys.sprint = false;
+        });
+
+        document.body.addEventListener('click', () => {
+            if (document.pointerLockElement !== document.body) {
+                document.body.requestPointerLock();
+            }
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            this.pointerLocked = document.pointerLockElement === document.body;
+            if (this.pointerLocked && this.onPointerAcquired) {
+                this.onPointerAcquired();
+            }
+        });
+
+        document.addEventListener('mousemove', (evt) => {
+            if (!this.pointerLocked) return;
+            this.heading -= evt.movementX * this.lookSensitivity;
+            this.cameraPitch -= evt.movementY * this.lookSensitivity;
+            const limit = Math.PI / 2 - 0.2;
+            this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch, -limit, limit * 0.6);
         });
     }
 
-    /**
-     * Call this every frame (e.g., in requestAnimationFrame).
-     */
+    setPlayerId(id) {
+        this.playerId = id;
+    }
+
+    setChunkSize(size) {
+        if (!size) return;
+        this.chunkSize = size;
+    }
+
+    getChunkSize() {
+        return this.chunkSize;
+    }
+
     update() {
-        console.log('update');
-        // 1) Rotate heading if a/d pressed
-        if (this.keys.a) {
-            this.heading += this.rotSpeed;
-        } else if (this.keys.d) {
-            this.heading -= this.rotSpeed;
-        }
+        const now = performance.now();
+        const delta = Math.min((now - this.lastUpdateTime) / 1000, 0.05);
+        this.lastUpdateTime = now;
 
-        // 2) Raycast to find ground
-        const groundY = getGroundHeightRaycast(this.scene, this.pos.x, this.pos.z, 200, [this.mesh]);
-
-        // 3) Check if on ground or in air
-        if (!this.inAir) {
-            const distToGround = groundY - this.pos.y;
-            if (distToGround < -this.fallThreshold) {
-                // Start falling
-                this.inAir = true;
-                // keep horizontal velocity
-            } else {
-                // Snap to ground if close
-                this.pos.y = groundY;
-                // Move on ground
-                this.handleGroundMovement();
-                // Jump
-                if (this.keys.jump) {
-                    this.inAir = true;
-                    this.vel.y = this.jumpForce;
-                } else {
-                    this.vel.y = 0;
-                }
-            }
-        } else {
-            // in air => apply gravity
-            this.vel.y += this.gravity;
-        }
-
-        // 4) Update position
-        this.pos.add(this.vel);
-
-        // 5) If in air, see if we landed
-        if (this.inAir && this.pos.y <= groundY) {
-            this.pos.y = groundY;
-            this.inAir = false;
-            this.vel.y = 0;
-        }
-
-        // 6) Update mesh and camera
-        this.mesh.position.copy(this.pos);
-        this.mesh.rotation.y = this.heading;
+        this.applyMovement(delta);
+        this.applyGravity(delta);
+        this.integrate(delta);
         this.updateCamera();
-
-        // 7) Track movement for net
-        this.batchDx += this.vel.x;
-        this.batchDz += this.vel.z;
-
-        // 8) Request chunk loading if needed
+        this.interactCooldown = Math.max(0, this.interactCooldown - delta);
+        if (this.pendingInteraction && this.interactCooldown <= 0) {
+            this.pendingInteraction = false;
+            this.tryInteract();
+            this.interactCooldown = 0.5;
+        }
         this.checkChunkBoundary();
     }
 
-    checkChunkBoundary() {
-        const cx = Math.floor(this.pos.x / this.chunkSize);
-        const cz = Math.floor(this.pos.z / this.chunkSize);
-        console.log('bound check', cx, cz)
+    applyMovement(delta) {
+        const forward = (this.keys.forward ? 1 : 0) - (this.keys.backward ? 1 : 0);
+        const strafe = (this.keys.right ? 1 : 0) - (this.keys.left ? 1 : 0);
+        const magnitude = Math.hypot(forward, strafe);
 
-        if (cx !== this.lastChunkX || cz !== this.lastChunkZ) {
-            this.lastChunkX = cx;
-            this.lastChunkZ = cz;
+        let moveX = 0;
+        let moveZ = 0;
 
-            // Ask the server for everything in our view radius
-            if (this.chunkLoader) {
-                this.chunkLoader.requestNearbyChunks(this.loadRadius);
+        if (magnitude > 0) {
+            const normForward = forward / magnitude;
+            const normStrafe = strafe / magnitude;
+            const headingSin = Math.sin(this.heading);
+            const headingCos = Math.cos(this.heading);
+            moveX = headingSin * normForward * -1 + headingCos * normStrafe;
+            moveZ = headingCos * normForward + headingSin * normStrafe;
+        }
+
+        const targetSpeed = this.maxGroundSpeed * (this.keys.sprint ? this.sprintMultiplier : 1);
+        const desiredVx = moveX * targetSpeed;
+        const desiredVz = moveZ * targetSpeed;
+
+        const accel = this.inAir ? this.airAccel : this.groundAccel;
+        const decel = this.inAir ? this.airAccel : this.groundDeaccel;
+
+        this.vel.x = this.approach(this.vel.x, desiredVx, accel * delta, decel * delta);
+        this.vel.z = this.approach(this.vel.z, desiredVz, accel * delta, decel * delta);
+
+        if (!this.inAir) {
+            const groundY = getGroundHeightRaycast(this.scene, this.pos.x, this.pos.z, 200, [this.mesh]);
+            this.pos.y = groundY;
+            if (this.jumpRequested) {
+                this.vel.y = this.jumpForce;
+                this.inAir = true;
+                this.jumpRequested = false;
             }
         }
     }
 
-    handleGroundMovement() {
-        let forward = 0;
-        if (this.keys.w) forward += 1;
-        if (this.keys.s) forward -= 1;
+    applyGravity(delta) {
+        this.vel.y += this.gravity * delta;
+    }
 
-        const desiredVx = Math.sin(this.heading) * (forward * this.maxGroundSpeed);
-        const desiredVz = Math.cos(this.heading) * (forward * this.maxGroundSpeed);
+    integrate(delta) {
+        const nextPos = this.pos.clone().addScaledVector(this.vel, delta);
+        const groundY = getGroundHeightRaycast(this.scene, nextPos.x, nextPos.z, 200, [this.mesh]);
 
-        this.vel.x = this.approach(this.vel.x, desiredVx, this.groundAccel, this.groundDeaccel);
-        this.vel.z = this.approach(this.vel.z, desiredVz, this.groundAccel, this.groundDeaccel);
+        if (nextPos.y <= groundY) {
+            nextPos.y = groundY;
+            this.vel.y = 0;
+            this.inAir = false;
+        } else {
+            this.inAir = true;
+        }
+
+        this.pos.copy(nextPos);
+        this.mesh.position.copy(this.pos);
+        this.mesh.rotation.y = this.heading;
     }
 
     updateCamera() {
-        const camDist = 5;
-        const offsetX = Math.sin(this.heading) * -camDist;
-        const offsetZ = Math.cos(this.heading) * -camDist;
+        const offset = new THREE.Vector3(0, 0, -this.cameraDistance);
+        const rotation = new THREE.Euler(this.cameraPitch, this.heading, 0, 'YXZ');
+        offset.applyEuler(rotation);
 
         this.camera.position.set(
-            this.pos.x + offsetX,
-            this.pos.y + 2,
-            this.pos.z + offsetZ
+            this.pos.x + offset.x,
+            this.pos.y + this.cameraHeight + offset.y,
+            this.pos.z + offset.z
         );
-        this.camera.lookAt(this.pos.x, this.pos.y, this.pos.z);
+        this.camera.lookAt(this.pos.x, this.pos.y + this.cameraHeight, this.pos.z);
     }
 
-    /**
-     * Gradually accelerate or decelerate from current => target,
-     * with separate accel/decel rates.
-     */
     approach(current, target, accelRate, decelRate) {
         const diff = target - current;
-        if (Math.abs(diff) < 0.000001) {
+        if (Math.abs(diff) < 1e-4) {
             return target;
         }
         if (diff > 0) {
             const next = current + accelRate;
             return next > target ? target : next;
+        }
+        const next = current - decelRate;
+        return next < target ? target : next;
+    }
+
+    sendMovementToServerIfNeeded() {
+        if (!this.network) {
+            return;
+        }
+
+        const now = performance.now();
+        const moved = this.pos.distanceToSquared(this.lastSentPosition) > 0.04;
+        const headingChanged = Math.abs(this.heading - this.lastSentHeading) > 0.01;
+        const timeElapsed = now - this.lastNetworkSend > 200;
+
+        if (moved || headingChanged || timeElapsed) {
+            this.network.sendPlayerTransform({
+                x: this.pos.x,
+                y: this.pos.y,
+                z: this.pos.z,
+                heading: this.heading,
+                velocityX: this.vel.x,
+                velocityZ: this.vel.z
+            });
+            this.lastSentPosition.copy(this.pos);
+            this.lastSentHeading = this.heading;
+            this.lastNetworkSend = now;
+        }
+    }
+
+    applyAuthoritativeState(snapshot) {
+        if (!snapshot) {
+            return;
+        }
+
+        const serverPos = new THREE.Vector3(snapshot.x, snapshot.y, snapshot.z);
+        const distanceSq = serverPos.distanceToSquared(this.pos);
+
+        if (distanceSq > 1.5) {
+            this.pos.copy(serverPos);
         } else {
-            const next = current - decelRate;
-            return next < target ? target : next;
+            this.pos.lerp(serverPos, 0.25);
         }
+
+        this.heading = snapshot.heading ?? this.heading;
+        this.mesh.position.copy(this.pos);
+        this.mesh.rotation.y = this.heading;
+        this.updateCamera();
     }
 
-    sendMovementToServerIfNeeded(network) {
-        const threshold = 0.1;
-
-        const dx = this.batchDx;
-        const dz = this.batchDz;
-        const y = this.pos.y;
-
-        if (Math.abs(dx) > threshold || Math.abs(dz) > threshold) {
-            network.sendPlayerMove(dx, dz, y);
-            this.batchDx = 0;
-            this.batchDz = 0;
+    tryInteract() {
+        if (!this.network) {
+            return;
         }
+        const origin = this.camera.position.clone();
+        const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+        const raycaster = new THREE.Raycaster(origin, direction, 0, 6);
+        const objects = this.scene.children.filter(obj => obj.userData?.environmentId);
+        const intersects = raycaster.intersectObjects(objects, true);
+        if (intersects.length === 0) {
+            return;
+        }
+        const match = intersects.find(hit => {
+            return Boolean(getEnvironmentId(hit.object));
+        });
+        if (!match) {
+            return;
+        }
+        const environmentId = getEnvironmentId(match.object);
+        this.network.sendInteraction(environmentId);
     }
 
-
-    setPosition(x, y, z) {
-        this.pos.set(x, y, z);
-        this.mesh.position.set(x, y, z);
-    }
-    getPosition() {
-        return { x: this.pos.x, y: this.pos.y, z: this.pos.z };
-    }
-
-    /**
-     * This is a naive chunk-load approach. We figure out which chunk the player is in,
-     * plus neighbors, and request them from the chunk loader if not already loaded.
-     */
-    loadChunksAroundPlayer() {
+    checkChunkBoundary() {
         const cx = Math.floor(this.pos.x / this.chunkSize);
         const cz = Math.floor(this.pos.z / this.chunkSize);
 
-        // For each chunk in the "radius," ensure it's loaded
-        for (let x = cx - this.loadRadius; x <= cx + this.loadRadius; x++) {
-            for (let z = cz - this.loadRadius; z <= cz + this.loadRadius; z++) {
-                const key = `${x},${z}`;
-                if (!this.loadedChunks.has(key)) {
-                    this.loadedChunks.add(key);
-                    if (this.chunkLoader) {
-                        // This might call your own function to load/generate chunk data from server
-                        this.chunkLoader.loadChunk(x, z);
-                    }
-                }
+        if (cx !== this.lastChunkX || cz !== this.lastChunkZ) {
+            this.lastChunkX = cx;
+            this.lastChunkZ = cz;
+            if (this.network) {
+                this.network.requestNearbyChunks(this.loadRadius);
             }
         }
     }
+
+    getPosition() {
+        return { x: this.pos.x, y: this.pos.y, z: this.pos.z };
+    }
 }
 
-/**
- * Raycasts straight down to find ground Y at a given x,z.
- * Returns 0 if it can’t find anything.
- */
 function getGroundHeightRaycast(scene, x, z, maxHeight = 200, ignoreMeshes = []) {
     const origin = new THREE.Vector3(x, maxHeight, z);
     const dir = new THREE.Vector3(0, -1, 0);
     const raycaster = new THREE.Raycaster(origin, dir);
-
-    // gather all objects except those to ignore
-    const allMeshes = scene.children.filter(obj => !ignoreMeshes.includes(obj));
-
+    const allMeshes = scene.children.filter(
+        obj => !ignoreMeshes.includes(obj) && obj.userData && obj.userData.isTerrain
+    );
     const intersects = raycaster.intersectObjects(allMeshes, true);
     if (intersects.length > 0) {
         return intersects[0].point.y;
     }
     return 0;
+}
+
+function getEnvironmentId(object) {
+    let current = object;
+    while (current) {
+        if (current.userData && current.userData.environmentId) {
+            return current.userData.environmentId;
+        }
+        current = current.parent;
+    }
+    return null;
 }

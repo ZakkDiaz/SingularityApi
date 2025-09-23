@@ -1,37 +1,123 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>Game Poc</title>
+    <title>Singularity World</title>
     <style>
+        :root {
+            color-scheme: dark;
+        }
+
         html, body {
             margin: 0;
             padding: 0;
             overflow: hidden;
-            background: #202030;
-            font-family: sans-serif;
-            color: #fff;
+            background: radial-gradient(circle at top, #2f3b58 0%, #1b1f2d 60%, #11131c 100%);
+            font-family: "Inter", "Segoe UI", sans-serif;
+            color: #e9ecf6;
+            height: 100%;
+            width: 100%;
+        }
+
+        #overlay {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
         }
 
         #log {
             position: absolute;
-            top: 10px;
-            left: 10px;
-            width: 300px;
-            height: 120px;
+            top: 16px;
+            left: 16px;
+            width: 320px;
+            height: 140px;
             overflow-y: auto;
-            background: rgba(0,0,0,0.3);
+            background: rgba(12, 16, 26, 0.55);
+            border-radius: 12px;
+            backdrop-filter: blur(6px);
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
             font-size: 12px;
+            line-height: 1.4;
+            padding: 12px 16px;
+            pointer-events: auto;
+        }
+
+        #hud {
+            position: absolute;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            min-width: 480px;
+            padding: 12px 18px;
+            border-radius: 999px;
+            background: rgba(17, 21, 33, 0.55);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 14px;
+            letter-spacing: 0.03em;
+            backdrop-filter: blur(6px);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+        }
+
+        #hud span {
+            opacity: 0.9;
+        }
+
+        #hud .divider {
+            width: 1px;
+            height: 18px;
+            background: rgba(255, 255, 255, 0.18);
+        }
+
+        #pointerPrompt {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 18px 28px;
+            border-radius: 16px;
+            background: rgba(13, 18, 30, 0.7);
+            text-align: center;
+            font-size: 16px;
+            letter-spacing: 0.05em;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+            transition: opacity 0.4s ease, transform 0.4s ease;
+            pointer-events: auto;
+        }
+
+        #pointerPrompt.hidden {
+            opacity: 0;
+            transform: translate(-50%, -40%);
+            pointer-events: none;
+        }
+
+        #pointerPrompt strong {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 18px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
         }
     </style>
 </head>
 <body>
-    <div id="log"></div>
+    <div id="overlay">
+        <div id="pointerPrompt">
+            <strong>Click to Dive In</strong>
+            WASD to move · Space to jump · Shift to sprint · E to interact
+        </div>
+        <div id="hud">
+            <span id="timeOfDay">--:-- · Night</span>
+            <span class="divider"></span>
+            <span>WASD move · Space jump · Shift sprint · E interact</span>
+        </div>
+        <div id="log"></div>
+    </div>
 
-    <!-- 1) Three.js from a CDN (global THREE object) -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.min.js"></script>
 
-    <!-- 2) Our modules -->
     <script type="module" src="./utils.js"></script>
     <script type="module" src="./network.js"></script>
     <script type="module" src="./world.js"></script>
