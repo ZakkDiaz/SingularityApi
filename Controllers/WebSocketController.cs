@@ -18,6 +18,9 @@ namespace SingularityApi.Controllers
         private const double TERRAIN_BASE_FREQUENCY = 0.01;
         private const double TERRAIN_BASE_AMPLITUDE = 8.0;
         private const double DAY_LENGTH_SECONDS = 480.0;
+        private const double SENTINEL_BASE_HEALTH = 40.0;
+        private const double SENTINEL_RESPAWN_SECONDS = 18.0;
+        private const int SENTINEL_XP_REWARD = 35;
 
         private static readonly ConcurrentDictionary<(int, int), ChunkData> ChunkCache = new();
         private static readonly ConcurrentDictionary<string, PlayerState> Players = new();
@@ -139,7 +142,7 @@ namespace SingularityApi.Controllers
                     break;
 
                 case "interact":
-                    await HandleInteractionAsync(root);
+                    await HandleInteractionAsync(connectionId, root);
                     break;
 
                 default:
@@ -261,7 +264,7 @@ namespace SingularityApi.Controllers
             await SendJsonAsync(socket, payload, cancel);
         }
 
-        private static async Task HandleInteractionAsync(JsonElement root)
+        private static async Task HandleInteractionAsync(string playerId, JsonElement root)
         {
             if (!root.TryGetProperty("environmentId", out var idProp))
             {
@@ -274,9 +277,25 @@ namespace SingularityApi.Controllers
                 return;
             }
 
-            if (EnvironmentManager.TryInteract(environmentId, out var updated) && updated != null)
+            if (!Players.TryGetValue(playerId, out var playerState))
+            {
+                return;
+            }
+
+            double attackPower;
+            lock (playerState)
+            {
+                attackPower = playerState.Stats.Attack;
+            }
+
+            if (EnvironmentManager.TryStrike(environmentId, attackPower, out var updated, out var defeated) && updated != null)
             {
                 await BroadcastJsonAsync(new { type = "environmentUpdate", environmentObject = updated });
+
+                if (defeated)
+                {
+                    await GrantExperienceAsync(playerState, SENTINEL_XP_REWARD, "Sentinel defeated");
+                }
             }
         }
 
@@ -287,16 +306,113 @@ namespace SingularityApi.Controllers
                 .Select(CreatePlayerSnapshot)
                 .ToList();
 
+            PlayerStatsDto? statsSnapshot = null;
+            if (Players.TryGetValue(connectionId, out var playerState))
+            {
+                statsSnapshot = BuildStatsSnapshot(playerState);
+            }
+
             var payload = new
             {
                 type = "initialState",
                 playerId = connectionId,
                 worldSeed = WORLD_SEED,
                 timeOfDay = GetTimeOfDayFraction(),
-                players = otherPlayers
+                players = otherPlayers,
+                stats = statsSnapshot
             };
 
             await SendJsonAsync(socket, payload, cancel);
+        }
+
+        private static Task GrantExperienceAsync(PlayerState state, int xpAwarded, string reason)
+        {
+            PlayerStatsDto snapshot;
+            bool leveledUp;
+
+            lock (state)
+            {
+                var stats = state.Stats;
+                stats.Experience += xpAwarded;
+                leveledUp = false;
+
+                while (stats.Experience >= stats.ExperienceToNext)
+                {
+                    stats.Experience -= stats.ExperienceToNext;
+                    stats.Level++;
+                    stats.Attack += 2;
+                    stats.MaxHealth += 10;
+                    stats.CurrentHealth = stats.MaxHealth;
+                    stats.ExperienceToNext = CalculateExperienceForNext(stats.Level);
+                    leveledUp = true;
+                }
+
+                snapshot = new PlayerStatsDto
+                {
+                    Level = stats.Level,
+                    Experience = stats.Experience,
+                    ExperienceToNext = stats.ExperienceToNext,
+                    Attack = stats.Attack,
+                    MaxHealth = stats.MaxHealth,
+                    CurrentHealth = stats.CurrentHealth
+                };
+            }
+
+            return SendPlayerStatsAsync(state, snapshot, xpAwarded, leveledUp, reason);
+        }
+
+        private static Task SendPlayerStatsAsync(PlayerState state, PlayerStatsDto snapshot, int xpAwarded, bool leveledUp, string reason)
+        {
+            if (!Connections.TryGetValue(state.Id, out var socket) || socket.State != WebSocketState.Open)
+            {
+                return Task.CompletedTask;
+            }
+
+            var payload = new
+            {
+                type = "playerStats",
+                stats = snapshot,
+                xpAwarded,
+                leveledUp,
+                reason
+            };
+
+            return SendJsonAsync(socket, payload, CancellationToken.None);
+        }
+
+        private static PlayerStatsDto BuildStatsSnapshot(PlayerState state)
+        {
+            lock (state)
+            {
+                return new PlayerStatsDto
+                {
+                    Level = state.Stats.Level,
+                    Experience = state.Stats.Experience,
+                    ExperienceToNext = state.Stats.ExperienceToNext,
+                    Attack = state.Stats.Attack,
+                    MaxHealth = state.Stats.MaxHealth,
+                    CurrentHealth = state.Stats.CurrentHealth
+                };
+            }
+        }
+
+        private static PlayerStats CreateInitialStats()
+        {
+            var required = CalculateExperienceForNext(1);
+            return new PlayerStats
+            {
+                Level = 1,
+                Experience = 0,
+                ExperienceToNext = required,
+                Attack = 8,
+                MaxHealth = 120,
+                CurrentHealth = 120
+            };
+        }
+
+        private static int CalculateExperienceForNext(int level)
+        {
+            return 80 + Math.Max(0, level - 1) * 35;
         }
 
         private static Task BroadcastPlayerStateAsync(PlayerState state)
@@ -370,7 +486,7 @@ namespace SingularityApi.Controllers
                 var worldZ = cz * CHUNK_SIZE + offsetZ;
                 var worldY = SampleTerrainHeight(worldX, worldZ);
 
-                var type = rng.NextDouble() < 0.7 ? "tree" : "crystal";
+                var type = rng.NextDouble() < 0.7 ? "tree" : "sentinel";
 
                 var blueprint = new EnvironmentBlueprint
                 {
@@ -528,6 +644,7 @@ namespace SingularityApi.Controllers
             public double VelocityX { get; set; }
             public double VelocityZ { get; set; }
             public DateTime LastUpdate { get; set; }
+            public PlayerStats Stats { get; } = CreateInitialStats();
         }
 
         private class PlayerSnapshot
@@ -541,6 +658,26 @@ namespace SingularityApi.Controllers
             public double VelocityX { get; set; }
             public double VelocityZ { get; set; }
             public long LastServerUpdate { get; set; }
+        }
+
+        private class PlayerStats
+        {
+            public int Level { get; set; }
+            public int Experience { get; set; }
+            public int ExperienceToNext { get; set; }
+            public int Attack { get; set; }
+            public int MaxHealth { get; set; }
+            public int CurrentHealth { get; set; }
+        }
+
+        private class PlayerStatsDto
+        {
+            public int Level { get; set; }
+            public int Experience { get; set; }
+            public int ExperienceToNext { get; set; }
+            public int Attack { get; set; }
+            public int MaxHealth { get; set; }
+            public int CurrentHealth { get; set; }
         }
 
         public class Vertex
@@ -591,6 +728,7 @@ namespace SingularityApi.Controllers
         {
             public bool IsActive { get; set; }
             public double CooldownRemaining { get; set; }
+            public double HealthFraction { get; set; }
         }
 
         private static class EnvironmentManager
@@ -601,7 +739,22 @@ namespace SingularityApi.Controllers
             public static void EnsureBlueprint(EnvironmentBlueprint blueprint)
             {
                 Blueprints.AddOrUpdate(blueprint.Id, blueprint, (_, existing) => existing);
-                States.GetOrAdd(blueprint.Id, _ => new EnvironmentRuntimeState());
+                States.AddOrUpdate(
+                    blueprint.Id,
+                    _ =>
+                    {
+                        var runtime = new EnvironmentRuntimeState();
+                        runtime.ConfigureForBlueprint(blueprint, resetState: true);
+                        return runtime;
+                    },
+                    (_, existing) =>
+                    {
+                        lock (existing)
+                        {
+                            existing.ConfigureForBlueprint(blueprint, resetState: false);
+                            return existing;
+                        }
+                    });
             }
 
             public static List<EnvironmentObjectDto> CreateSnapshotForChunk(ChunkData chunk)
@@ -619,13 +772,23 @@ namespace SingularityApi.Controllers
                 return list;
             }
 
-            public static bool TryInteract(string environmentId, out EnvironmentObjectDto? updated)
+            public static bool TryStrike(string environmentId, double damage, out EnvironmentObjectDto? updated, out bool defeated)
             {
                 updated = null;
-                if (!States.TryGetValue(environmentId, out var state))
+                defeated = false;
+
+                if (!Blueprints.TryGetValue(environmentId, out var blueprint) ||
+                    !States.TryGetValue(environmentId, out var state))
                 {
                     return false;
                 }
+
+                if (!string.Equals(blueprint.Type, "sentinel", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                damage = Math.Max(1.0, damage);
 
                 lock (state)
                 {
@@ -638,10 +801,18 @@ namespace SingularityApi.Controllers
 
                         state.IsActive = true;
                         state.RespawnAt = null;
+                        state.Health = state.MaxHealth;
                     }
 
-                    state.IsActive = false;
-                    state.RespawnAt = DateTime.UtcNow.AddSeconds(12);
+                    state.Health = Math.Max(0, state.Health - damage);
+
+                    if (state.Health <= double.Epsilon)
+                    {
+                        state.IsActive = false;
+                        state.RespawnAt = DateTime.UtcNow.AddSeconds(SENTINEL_RESPAWN_SECONDS);
+                        state.Health = 0;
+                        defeated = true;
+                    }
                 }
 
                 updated = BuildSnapshot(environmentId);
@@ -663,6 +834,7 @@ namespace SingularityApi.Controllers
                         {
                             state.IsActive = true;
                             state.RespawnAt = null;
+                            state.Health = state.MaxHealth;
                             changed = true;
                         }
                     }
@@ -694,6 +866,7 @@ namespace SingularityApi.Controllers
 
                 bool isActive;
                 double cooldownRemaining;
+                double healthFraction;
 
                 lock (runtime)
                 {
@@ -701,11 +874,15 @@ namespace SingularityApi.Controllers
                     {
                         runtime.IsActive = true;
                         runtime.RespawnAt = null;
+                        runtime.Health = runtime.MaxHealth;
                     }
 
                     isActive = runtime.IsActive;
                     cooldownRemaining = runtime.RespawnAt.HasValue
                         ? Math.Max(0, (runtime.RespawnAt.Value - DateTime.UtcNow).TotalSeconds)
+                        : 0;
+                    healthFraction = runtime.MaxHealth > 0
+                        ? Math.Clamp(runtime.Health / runtime.MaxHealth, 0, 1)
                         : 0;
                 }
 
@@ -722,7 +899,8 @@ namespace SingularityApi.Controllers
                     State = new EnvironmentStateDto
                     {
                         IsActive = isActive,
-                        CooldownRemaining = cooldownRemaining
+                        CooldownRemaining = cooldownRemaining,
+                        HealthFraction = healthFraction
                     }
                 };
             }
@@ -731,6 +909,39 @@ namespace SingularityApi.Controllers
             {
                 public bool IsActive { get; set; } = true;
                 public DateTime? RespawnAt { get; set; }
+                public double MaxHealth { get; set; } = 1.0;
+                public double Health { get; set; } = 1.0;
+
+                public void ConfigureForBlueprint(EnvironmentBlueprint blueprint, bool resetState)
+                {
+                    if (string.Equals(blueprint.Type, "sentinel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        MaxHealth = SENTINEL_BASE_HEALTH;
+                    }
+                    else
+                    {
+                        MaxHealth = 1.0;
+                    }
+
+                    if (MaxHealth <= 0)
+                    {
+                        MaxHealth = 1.0;
+                    }
+
+                    if (resetState)
+                    {
+                        IsActive = true;
+                        RespawnAt = null;
+                        Health = MaxHealth;
+                    }
+                    else
+                    {
+                        if (Health <= 0 || Health > MaxHealth)
+                        {
+                            Health = MaxHealth;
+                        }
+                    }
+                }
             }
         }
     }

@@ -145,7 +145,7 @@ export class World {
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             this.scene.add(mesh);
-            record = { mesh };
+            record = { mesh, pulseOffset: Math.random() * Math.PI * 2 };
             this.environmentMeshes.set(data.id, record);
 
             if (!this.chunkEnvironmentIndex.has(chunkKey)) {
@@ -159,26 +159,82 @@ export class World {
                 node.userData.chunkKey = chunkKey;
                 node.userData.environmentType = data.type;
             });
+        } else if (record.pulseOffset === undefined) {
+            record.pulseOffset = Math.random() * Math.PI * 2;
         }
 
-        record.mesh.position.set(data.x, data.y, data.z);
+        record.mesh.userData.pulseOffset = record.pulseOffset;
+        record.mesh.userData.baseY = data.y;
+        if (record.mesh.userData.environmentType === 'sentinel') {
+            const floatHeight = record.mesh.userData.floatHeight ?? 0.95;
+            record.mesh.position.set(data.x, data.y + floatHeight, data.z);
+        } else {
+            record.mesh.position.set(data.x, data.y, data.z);
+        }
         record.mesh.rotation.y = data.rotation ?? 0;
         this.applyEnvironmentState(record.mesh, data.state);
     }
 
     buildEnvironmentMesh(type) {
-        if (type === 'crystal') {
-            const geometry = new THREE.IcosahedronGeometry(0.6, 0);
-            const material = new THREE.MeshStandardMaterial({
-                color: 0x86d5ff,
-                emissive: 0x1f5b8c,
-                emissiveIntensity: 0.6,
-                roughness: 0.2,
-                metalness: 0.1,
+        if (type === 'sentinel') {
+            const group = new THREE.Group();
+
+            const pedestalGeo = new THREE.CylinderGeometry(0.55, 0.7, 0.5, 18);
+            const pedestalMat = new THREE.MeshStandardMaterial({ color: 0x142131, roughness: 0.6, metalness: 0.35 });
+            const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
+            pedestal.castShadow = true;
+            pedestal.receiveShadow = true;
+            group.add(pedestal);
+
+            const outerGeo = new THREE.IcosahedronGeometry(0.82, 1);
+            const outerMat = new THREE.MeshStandardMaterial({
+                color: 0x1f5281,
+                emissive: 0x124063,
+                emissiveIntensity: 0.7,
+                roughness: 0.25,
+                metalness: 0.35,
                 transparent: true,
-                opacity: 0.95
+                opacity: 0.88
             });
-            return new THREE.Mesh(geometry, material);
+            const outer = new THREE.Mesh(outerGeo, outerMat);
+            outer.position.y = 0.95;
+            outer.castShadow = true;
+            outer.receiveShadow = true;
+            group.add(outer);
+
+            const coreGeo = new THREE.SphereGeometry(0.38, 20, 20);
+            const coreMat = new THREE.MeshStandardMaterial({
+                color: 0x9ff6ff,
+                emissive: 0x4ec8ff,
+                emissiveIntensity: 1.35,
+                roughness: 0.1,
+                metalness: 0.2,
+                transparent: true,
+                opacity: 0.9
+            });
+            const core = new THREE.Mesh(coreGeo, coreMat);
+            core.position.y = 0.95;
+            group.add(core);
+
+            const haloGeo = new THREE.TorusGeometry(0.62, 0.05, 16, 64);
+            const haloMat = new THREE.MeshStandardMaterial({
+                color: 0x66d7ff,
+                emissive: 0x2aa7ff,
+                emissiveIntensity: 0.8,
+                roughness: 0.25,
+                metalness: 0.4
+            });
+            const halo = new THREE.Mesh(haloGeo, haloMat);
+            halo.rotation.x = Math.PI / 2;
+            halo.position.y = 0.95;
+            group.add(halo);
+
+            group.userData.outer = outer;
+            group.userData.core = core;
+            group.userData.halo = halo;
+            group.userData.floatHeight = 0.95;
+
+            return group;
         }
 
         const group = new THREE.Group();
@@ -206,17 +262,38 @@ export class World {
             return;
         }
 
-        mesh.visible = state.isActive;
         const cooldown = state.cooldownRemaining ?? 0;
+        const type = mesh.userData.environmentType;
+        const healthFraction = state.healthFraction ?? (state.isActive ? 1 : 0);
         mesh.userData.cooldown = cooldown;
         mesh.userData.isActive = state.isActive;
+        mesh.userData.healthFraction = healthFraction;
 
-        if (mesh.material && mesh.material.emissive) {
-            mesh.material.emissiveIntensity = state.isActive ? 0.6 : 0.1;
-            mesh.material.opacity = state.isActive ? 0.95 : 0.35;
+        if (type === 'sentinel') {
+            mesh.visible = state.isActive || cooldown > 0;
+            const outer = mesh.userData.outer;
+            const core = mesh.userData.core;
+            const halo = mesh.userData.halo;
+            if (outer && outer.material) {
+                outer.material.opacity = state.isActive ? 0.55 + healthFraction * 0.35 : 0.18;
+                outer.material.emissiveIntensity = state.isActive ? 0.45 + healthFraction * 0.9 : 0.08;
+            }
+            if (core && core.material) {
+                core.visible = state.isActive;
+                core.material.emissiveIntensity = state.isActive ? 1.1 + healthFraction * 0.9 : 0.1;
+            }
+            if (halo && halo.material) {
+                halo.visible = state.isActive;
+                halo.material.emissiveIntensity = state.isActive ? 0.6 + healthFraction * 0.6 : 0.1;
+            }
+        } else {
+            mesh.visible = state.isActive;
+            if (mesh.material && mesh.material.emissive) {
+                mesh.material.emissiveIntensity = state.isActive ? 0.6 : 0.1;
+                mesh.material.opacity = state.isActive ? 0.95 : 0.35;
+            }
+            mesh.scale.setScalar(state.isActive ? 1 : 0.6);
         }
-
-        mesh.scale.setScalar(state.isActive ? 1 : 0.6);
     }
 
     removeEnvironmentObject(id) {
@@ -341,15 +418,40 @@ export class World {
             record.mesh.rotation.y = THREE.MathUtils.lerp(current, target, 1 - Math.exp(-delta * 6));
         });
 
-        this.environmentMeshes.forEach(({ mesh }) => {
-            if (!mesh.userData.isActive) {
+        this.environmentMeshes.forEach(({ mesh, pulseOffset = 0 }) => {
+            if (!mesh.visible) {
                 return;
             }
-            if (mesh.material && mesh.material.emissiveIntensity) {
-                mesh.material.emissiveIntensity = 0.5 + Math.sin(this.environmentPulse * 2.5) * 0.2;
-            }
-            if (mesh.userData.environmentType === 'crystal') {
-                mesh.rotation.y += delta * 0.6;
+
+            const type = mesh.userData.environmentType;
+            if (type === 'sentinel') {
+                const baseY = mesh.userData.baseY ?? mesh.position.y;
+                const floatHeight = mesh.userData.floatHeight ?? 0.95;
+                const health = mesh.userData.healthFraction ?? 1;
+                const isActive = mesh.userData.isActive;
+                const offset = mesh.userData.pulseOffset ?? pulseOffset ?? 0;
+                const bob = Math.sin(this.environmentPulse * 3.1 + offset) * 0.35 * (0.3 + health * 0.7);
+                const targetY = isActive ? baseY + floatHeight + bob : baseY + 0.3;
+                mesh.position.y = THREE.MathUtils.lerp(mesh.position.y, targetY, 1 - Math.exp(-delta * 6));
+
+                const outer = mesh.userData.outer;
+                if (outer) {
+                    outer.rotation.y += delta * 0.85;
+                    outer.rotation.x += delta * 0.25;
+                }
+                const halo = mesh.userData.halo;
+                if (halo) {
+                    halo.rotation.z += delta * 1.2;
+                }
+                const core = mesh.userData.core;
+                if (core) {
+                    const pulse = 0.85 + Math.sin(this.environmentPulse * 5.4 + offset) * 0.18;
+                    core.scale.setScalar(0.9 * (0.6 + health * 0.6) * pulse);
+                }
+            } else if (mesh.userData.isActive) {
+                if (mesh.material && mesh.material.emissiveIntensity) {
+                    mesh.material.emissiveIntensity = 0.5 + Math.sin(this.environmentPulse * 2.5) * 0.2;
+                }
             }
         });
 

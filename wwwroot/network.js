@@ -128,6 +128,12 @@ export class Network {
                 }
                 break;
 
+            case 'playerStats':
+                if (this.callbacks.onPlayerStats) {
+                    this.callbacks.onPlayerStats(data);
+                }
+                break;
+
             default:
                 log(`Unknown message type: ${data.type}`);
                 break;

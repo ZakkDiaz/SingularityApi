@@ -100,6 +100,111 @@
             letter-spacing: 0.12em;
             text-transform: uppercase;
         }
+
+        #statsPanel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 220px;
+            padding: 16px 20px;
+            border-radius: 18px;
+            background: rgba(19, 25, 37, 0.72);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(8px);
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 0.35s ease, transform 0.35s ease;
+        }
+
+        #statsPanel.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        #statsPanel .label {
+            font-size: 11px;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            opacity: 0.65;
+        }
+
+        #statsPanel .value {
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+        }
+
+        #statsPanel .stat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+
+        #statsPanel .stat-grid {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-top: 14px;
+        }
+
+        #statsPanel .stat-grid div {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        #statsPanel .xp-wrapper {
+            margin-top: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        #statsPanel .xp-bar {
+            width: 100%;
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.12);
+            overflow: hidden;
+        }
+
+        #xpFill {
+            height: 100%;
+            width: 8%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #46aef1, #9df4ff);
+            box-shadow: 0 0 14px rgba(77, 190, 255, 0.45);
+            transition: width 0.3s ease;
+        }
+
+        #xpText {
+            font-size: 12px;
+            opacity: 0.75;
+            letter-spacing: 0.06em;
+        }
+
+        #levelToast {
+            position: absolute;
+            top: 120px;
+            left: 50%;
+            transform: translateX(-50%) scale(0.9);
+            padding: 12px 26px;
+            border-radius: 999px;
+            background: rgba(30, 44, 70, 0.78);
+            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+            text-transform: uppercase;
+            letter-spacing: 0.22em;
+            font-weight: 600;
+            font-size: 13px;
+            opacity: 0;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            pointer-events: none;
+        }
+
+        #levelToast.visible {
+            opacity: 1;
+            transform: translateX(-50%) scale(1);
+        }
     </style>
 </head>
 <body>
@@ -108,6 +213,28 @@
             <strong>Click to Dive In</strong>
             WASD to move · Space to jump · Shift to sprint · E to interact
         </div>
+        <div id="statsPanel">
+            <div class="stat-header">
+                <span class="label">Level</span>
+                <span class="value" id="statLevel">1</span>
+            </div>
+            <div class="stat-grid">
+                <div>
+                    <span class="label">Attack</span>
+                    <span class="value" id="statAttack">0</span>
+                </div>
+                <div>
+                    <span class="label">Vitality</span>
+                    <span class="value" id="statHealth">0 / 0</span>
+                </div>
+            </div>
+            <div class="xp-wrapper">
+                <span class="label">Experience</span>
+                <div class="xp-bar"><div id="xpFill"></div></div>
+                <div id="xpText">0 / 0 XP</div>
+            </div>
+        </div>
+        <div id="levelToast">Level Up!</div>
         <div id="hud">
             <span id="timeOfDay">--:-- · Night</span>
             <span class="divider"></span>
