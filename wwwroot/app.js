@@ -75,6 +75,7 @@ function init() {
             chunks.forEach(chunk => {
                 world.addOrUpdateChunk(chunk.x, chunk.z, effectiveChunkSize, chunk.vertices);
                 world.updateEnvironmentForChunk(chunk.x, chunk.z, chunk.environmentObjects || []);
+                world.syncChunkMobs(chunk.x, chunk.z, chunk.mobs || []);
             });
             const cleanupDistance = (effectiveChunkSize ?? 16) * 8;
             world.cleanupDistantChunks(player.getPosition(), cleanupDistance);
@@ -82,6 +83,20 @@ function init() {
         },
         onEnvironmentUpdate: (environmentObject) => {
             world.updateEnvironmentObject(environmentObject);
+        },
+        onMobUpdate: (mobs) => {
+            world.applyMobUpdate(mobs);
+        },
+        onMobAttack: (attack) => {
+            if (attack && attack.mobId) {
+                world.playMobAttack(attack.mobId, attack.targetId);
+            }
+        },
+        onPlayerAbility: (payload) => {
+            if (!payload) {
+                return;
+            }
+            world.playPlayerAbility(payload.playerId, payload.abilityId);
         },
         onWorldTick: (timeOfDay) => {
             world.updateWorldTime(timeOfDay);

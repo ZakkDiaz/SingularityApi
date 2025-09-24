@@ -1,4 +1,5 @@
 import { log } from './utils.js';
+import { createPlayerAvatar, updateHumanoidAnimation, triggerHumanoidAttack } from './avatars.js';
 
 const FORWARD_KEYS = new Set(['w', 'ArrowUp']);
 const BACKWARD_KEYS = new Set(['s', 'ArrowDown']);
@@ -59,36 +60,20 @@ export class Player {
         this.pointerLocked = false;
         this.lastUpdateTime = performance.now();
 
-        this.mesh = this.buildLocalAvatar();
+        this.mesh = createPlayerAvatar();
         this.mesh.position.copy(this.pos);
         this.scene.add(this.mesh);
+        if (this.world && typeof this.world.registerLocalPlayerAvatar === 'function') {
+            this.world.registerLocalPlayerAvatar(this.mesh);
+        }
+
+        this.avatarState = { moveSpeed: 0 };
+
+        this.aimDirection = new THREE.Vector3(0, 0, -1);
+        this.aimOrigin = new THREE.Vector3();
+        this.aimEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
         this.initInputListeners();
-    }
-
-    buildLocalAvatar() {
-        const group = new THREE.Group();
-
-        const bodyGeo = new THREE.CapsuleGeometry(0.36, 1.2, 12, 16);
-        const bodyMat = new THREE.MeshStandardMaterial({
-            color: 0xfca17d,
-            roughness: 0.4,
-            metalness: 0.2
-        });
-        const body = new THREE.Mesh(bodyGeo, bodyMat);
-        body.castShadow = true;
-        body.receiveShadow = true;
-        group.add(body);
-
-        const accentsGeo = new THREE.TorusGeometry(0.55, 0.08, 12, 32);
-        const accentsMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1, metalness: 0.6 });
-        const accents = new THREE.Mesh(accentsGeo, accentsMat);
-        accents.rotation.x = Math.PI / 2;
-        accents.position.y = 0.4;
-        group.add(accents);
-
-        group.userData.ignoreGroundRay = true;
-        return group;
     }
 
     initInputListeners() {
@@ -174,6 +159,7 @@ export class Player {
         }
         this.checkChunkBoundary();
         this.updateAbilityCooldowns(delta);
+        this.animateAvatar(delta);
     }
 
     applyMovement(delta) {
@@ -206,6 +192,10 @@ export class Player {
 
         this.vel.x = this.approach(this.vel.x, desiredVx, accel * delta, decel * delta);
         this.vel.z = this.approach(this.vel.z, desiredVz, accel * delta, decel * delta);
+
+        if (this.avatarState) {
+            this.avatarState.moveSpeed = Math.hypot(this.vel.x, this.vel.z);
+        }
 
         if (!this.inAir) {
             const groundY = getGroundHeightRaycast(this.scene, this.pos.x, this.pos.z, 200, [this.mesh]);
@@ -314,27 +304,27 @@ export class Player {
         if (!this.network) {
             return;
         }
-        const environmentId = this.findEnvironmentTarget();
-        if (!environmentId) {
+        const targetId = this.findCombatTarget();
+        if (!targetId) {
             return;
         }
-        this.network.sendInteraction(environmentId);
+        this.network.sendInteraction(targetId);
     }
 
-    findEnvironmentTarget(maxDistance = 14) {
+    findCombatTarget(maxDistance = 16) {
         const origin = this.camera.position.clone();
         const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
         const raycaster = new THREE.Raycaster(origin, direction, 0, maxDistance);
-        const objects = this.scene.children.filter(obj => obj.userData?.environmentId);
+        const objects = this.scene.children.filter(obj => obj.userData && (obj.userData.combatId || obj.userData.environmentId));
         const intersects = raycaster.intersectObjects(objects, true);
         if (intersects.length === 0) {
             return null;
         }
-        const match = intersects.find(hit => Boolean(getEnvironmentId(hit.object)));
+        const match = intersects.find(hit => Boolean(getCombatTargetId(hit.object)));
         if (!match) {
             return null;
         }
-        return getEnvironmentId(match.object) ?? null;
+        return getCombatTargetId(match.object) ?? null;
     }
 
     checkChunkBoundary() {
@@ -383,15 +373,16 @@ export class Player {
             log(`${ability.name} ready in ${ability.cooldownRemaining.toFixed(1)}s.`);
             return false;
         }
-        const environmentId = this.findEnvironmentTarget();
-        if (!environmentId) {
+        const targetId = this.findCombatTarget();
+        if (!targetId) {
             log('No valid target in sight.');
             return false;
         }
-        this.network.sendAbilityUse(abilityId, environmentId);
+        this.network.sendAbilityUse(abilityId, targetId);
         if (typeof ability.cooldown === 'number') {
             ability.cooldownRemaining = ability.cooldown;
         }
+        triggerHumanoidAttack(this.mesh);
         return true;
     }
 
@@ -447,6 +438,25 @@ export class Player {
         }
     }
 
+    animateAvatar(delta) {
+        if (!this.mesh) {
+            return;
+        }
+        const speed = this.avatarState?.moveSpeed ?? 0;
+        if (this.aimEuler) {
+            this.aimEuler.set(this.cameraPitch, this.heading, 0, 'YXZ');
+            this.aimDirection.set(0, 0, -1).applyEuler(this.aimEuler).normalize();
+        }
+        this.aimOrigin.set(this.pos.x, this.pos.y + this.cameraHeight * 0.75, this.pos.z);
+        updateHumanoidAnimation(this.mesh, delta, {
+            speed,
+            onGround: !this.inAir,
+            aimDirection: this.aimDirection,
+            aimOrigin: this.aimOrigin,
+            aimStrength: 0.95
+        });
+    }
+
     getAbilityStates() {
         return Array.from(this.abilities.values()).map(ability => ({ ...ability }));
     }
@@ -466,11 +476,16 @@ function getGroundHeightRaycast(scene, x, z, maxHeight = 200, ignoreMeshes = [])
     return 0;
 }
 
-function getEnvironmentId(object) {
+function getCombatTargetId(object) {
     let current = object;
     while (current) {
-        if (current.userData && current.userData.environmentId) {
-            return current.userData.environmentId;
+        if (current.userData) {
+            if (current.userData.combatId) {
+                return current.userData.combatId;
+            }
+            if (current.userData.environmentId) {
+                return current.userData.environmentId;
+            }
         }
         current = current.parent;
     }

@@ -1,5 +1,6 @@
 // world.js
 import { log } from './utils.js';
+import { createPlayerAvatar, createMobAvatar, updateHumanoidAnimation, triggerHumanoidAttack } from './avatars.js';
 
 const CHUNK_MATERIAL = new THREE.MeshStandardMaterial({
     color: 0x6ea07c,
@@ -7,6 +8,23 @@ const CHUNK_MATERIAL = new THREE.MeshStandardMaterial({
     metalness: 0.0,
     flatShading: false
 });
+
+const WEBGPU_AVAILABLE = typeof navigator !== 'undefined' && Boolean(navigator.gpu);
+let webGpuRendererPromise = null;
+
+const AIM_TARGET_TIMEOUT_MS = 1600;
+
+function loadWebGpuRenderer() {
+    if (!WEBGPU_AVAILABLE) {
+        return Promise.resolve(null);
+    }
+    if (!webGpuRendererPromise) {
+        webGpuRendererPromise = import('https://cdn.jsdelivr.net/npm/three@0.156.1/examples/jsm/renderers/WebGPURenderer.js')
+            .then(mod => mod.WebGPURenderer)
+            .catch(() => null);
+    }
+    return webGpuRendererPromise;
+}
 
 export class World {
     constructor() {
@@ -20,13 +38,21 @@ export class World {
         this.clock = new THREE.Clock();
         this.lastDelta = 0.016;
 
-        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        this.renderer.outputEncoding = THREE.sRGBEncoding;
+        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+        if (this.renderer.outputColorSpace !== undefined) {
+            this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+        } else {
+            this.renderer.outputEncoding = THREE.sRGBEncoding;
+        }
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.shadowMap.enabled = true;
         this.renderer.setPixelRatio(window.devicePixelRatio || 1);
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.shadowMap.enabled = true;
+        this.renderer.domElement.style.position = 'absolute';
+        this.renderer.domElement.style.inset = '0';
+        this.renderer.domElement.style.zIndex = '0';
         document.body.appendChild(this.renderer.domElement);
+        this.rendererType = 'webgl';
 
         this.directionalLight = new THREE.DirectionalLight(0xf7f5e9, 0.9);
         this.directionalLight.position.set(60, 100, 40);
@@ -39,12 +65,26 @@ export class World {
         this.chunkMeshes = new Map();
         this.environmentMeshes = new Map();
         this.chunkEnvironmentIndex = new Map();
+        this.mobActors = new Map();
+        this.chunkMobIndex = new Map();
         this.remotePlayers = new Map();
         this.localPlayerId = null;
+        this.localPlayerMesh = null;
+        this.healthBarMaterial = new THREE.MeshBasicMaterial({
+            color: 0xff5d73,
+            transparent: true,
+            opacity: 0.85,
+            depthWrite: false,
+            depthTest: false
+        });
         this.environmentPulse = 0;
 
         window.addEventListener('resize', () => this.handleResize());
         this.handleResize();
+
+        if (WEBGPU_AVAILABLE) {
+            this.tryUpgradeRenderer();
+        }
     }
 
     handleResize() {
@@ -53,12 +93,158 @@ export class World {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
+    tryUpgradeRenderer() {
+        loadWebGpuRenderer().then(async (RendererClass) => {
+            if (!RendererClass) {
+                return;
+            }
+            try {
+                const renderer = new RendererClass({ antialias: true });
+                await renderer.init();
+                renderer.toneMapping = THREE.ACESFilmicToneMapping;
+                renderer.setPixelRatio(window.devicePixelRatio || 1);
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                if (renderer.outputColorSpace !== undefined) {
+                    renderer.outputColorSpace = THREE.SRGBColorSpace;
+                }
+                renderer.domElement.style.position = 'absolute';
+                renderer.domElement.style.inset = '0';
+                renderer.domElement.style.zIndex = '0';
+                this.swapRenderer(renderer, 'webgpu');
+                log('Upgraded renderer to WebGPU');
+            } catch (err) {
+                console.warn('Failed to initialize WebGPU renderer', err);
+            }
+        });
+    }
+
+    swapRenderer(newRenderer, type = 'webgl') {
+        if (!newRenderer) {
+            return;
+        }
+        const previousCanvas = this.renderer?.domElement;
+        const parent = previousCanvas?.parentElement;
+        if (parent && newRenderer.domElement) {
+            parent.replaceChild(newRenderer.domElement, previousCanvas);
+        } else if (newRenderer.domElement) {
+            newRenderer.domElement.style.position = 'absolute';
+            newRenderer.domElement.style.inset = '0';
+            document.body.appendChild(newRenderer.domElement);
+        }
+        if (this.renderer && typeof this.renderer.dispose === 'function') {
+            this.renderer.dispose();
+        }
+        this.renderer = newRenderer;
+        this.rendererType = type;
+        this.handleResize();
+    }
+
     setLocalPlayerId(id) {
         this.localPlayerId = id;
     }
 
+    registerLocalPlayerAvatar(mesh) {
+        this.localPlayerMesh = mesh;
+    }
+
+    drawNameplate(ctx, canvas, text) {
+        if (!ctx || !canvas) {
+            return;
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'rgba(18, 26, 38, 0.85)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.font = '600 28px "Inter", sans-serif';
+        ctx.fillStyle = '#e6f0ff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    }
+
+    buildNameplate(text) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        this.drawNameplate(ctx, canvas, text);
+        const texture = new THREE.CanvasTexture(canvas);
+        if (texture.colorSpace !== undefined) {
+            texture.colorSpace = THREE.SRGBColorSpace;
+        } else {
+            texture.encoding = THREE.sRGBEncoding;
+        }
+        const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+        const sprite = new THREE.Sprite(material);
+        sprite.scale.set(2.3, 0.6, 1);
+        sprite.position.set(0, 2.35, 0);
+        sprite.userData.nameCanvas = canvas;
+        sprite.userData.nameContext = ctx;
+        return sprite;
+    }
+
+    updateNameplateTexture(sprite, text) {
+        const canvas = sprite?.userData?.nameCanvas;
+        const ctx = sprite?.userData?.nameContext;
+        if (!canvas || !ctx) {
+            return;
+        }
+        this.drawNameplate(ctx, canvas, text);
+        if (sprite.material?.map) {
+            sprite.material.map.needsUpdate = true;
+        }
+    }
+
+    playPlayerAbility(playerId) {
+        if (!playerId) {
+            return;
+        }
+        if (playerId === this.localPlayerId) {
+            if (this.localPlayerMesh) {
+                triggerHumanoidAttack(this.localPlayerMesh);
+            }
+            return;
+        }
+        const record = this.remotePlayers.get(playerId);
+        if (record) {
+            triggerHumanoidAttack(record.mesh);
+        }
+    }
+
+    playMobAttack(mobId, targetId) {
+        const record = this.mobActors.get(mobId);
+        if (!record) {
+            return;
+        }
+        if (targetId) {
+            const targetPosition = this.getActorWorldPosition(targetId);
+            if (targetPosition) {
+                if (!record.lastAimTarget) {
+                    record.lastAimTarget = new THREE.Vector3();
+                }
+                record.lastAimTarget.copy(targetPosition);
+                record.lastAimTarget.y += 1.3;
+                record.lastAimTimestamp = performance.now();
+            }
+        }
+        triggerHumanoidAttack(record.mesh);
+    }
+
     getDeltaSeconds() {
         return this.lastDelta;
+    }
+
+    getActorWorldPosition(actorId) {
+        if (!actorId) {
+            return null;
+        }
+        if (actorId === this.localPlayerId && this.localPlayerMesh) {
+            return this.localPlayerMesh.position.clone();
+        }
+        const remote = this.remotePlayers.get(actorId);
+        if (remote && remote.mesh) {
+            return remote.mesh.position.clone();
+        }
+        return null;
     }
 
     addOrUpdateChunk(cx, cz, chunkSize, vertexList) {
@@ -296,6 +482,119 @@ export class World {
         }
     }
 
+    syncChunkMobs(cx, cz, mobSnapshots) {
+        const chunkKey = `${cx},${cz}`;
+        const nextIds = new Set();
+
+        (mobSnapshots || []).forEach(snapshot => {
+            if (!snapshot || !snapshot.id) {
+                return;
+            }
+            nextIds.add(snapshot.id);
+            this.createOrUpdateMob(snapshot);
+        });
+
+        const previous = this.chunkMobIndex.get(chunkKey) || new Set();
+        previous.forEach(id => {
+            if (!nextIds.has(id)) {
+                this.removeMob(id);
+            }
+        });
+
+        this.chunkMobIndex.set(chunkKey, nextIds);
+    }
+
+    applyMobUpdate(payload) {
+        if (!payload) {
+            return;
+        }
+        const list = Array.isArray(payload) ? payload : [payload];
+        list.forEach(snapshot => this.createOrUpdateMob(snapshot));
+    }
+
+    createOrUpdateMob(snapshot) {
+        if (!snapshot || !snapshot.id) {
+            return;
+        }
+
+        const chunkKey = `${snapshot.chunkX},${snapshot.chunkZ}`;
+        if (!this.chunkMobIndex.has(chunkKey)) {
+            this.chunkMobIndex.set(chunkKey, new Set());
+        }
+        this.chunkMobIndex.get(chunkKey).add(snapshot.id);
+
+        let record = this.mobActors.get(snapshot.id);
+        if (!record) {
+            const mesh = createMobAvatar();
+            mesh.userData.combatId = snapshot.id;
+            mesh.userData.combatType = 'mob';
+            mesh.position.set(snapshot.x, snapshot.y, snapshot.z);
+            mesh.rotation.y = snapshot.heading ?? 0;
+            const healthBar = this.buildMobHealthBar();
+            mesh.add(healthBar);
+            this.scene.add(mesh);
+            record = {
+                mesh,
+                targetPosition: new THREE.Vector3(snapshot.x, snapshot.y, snapshot.z),
+                targetHeading: snapshot.heading ?? 0,
+                lastPosition: mesh.position.clone(),
+                healthBar,
+                healthFraction: snapshot.healthFraction ?? 1,
+                chunkKey,
+                aimDirection: new THREE.Vector3(0, 0, -1),
+                aimOrigin: new THREE.Vector3(),
+                lastAimTarget: null,
+                lastAimTimestamp: 0
+            };
+            this.mobActors.set(snapshot.id, record);
+        }
+
+        record.chunkKey = chunkKey;
+        record.targetPosition.set(snapshot.x, snapshot.y, snapshot.z);
+        record.targetHeading = snapshot.heading ?? record.targetHeading ?? 0;
+        record.healthFraction = snapshot.healthFraction ?? record.healthFraction ?? 1;
+        record.mesh.visible = snapshot.isAlive;
+        if (record.healthBar) {
+            record.healthBar.visible = snapshot.isAlive;
+        }
+        if (snapshot.isAlive) {
+            record.mesh.position.set(snapshot.x, snapshot.y, snapshot.z);
+            record.mesh.rotation.y = record.targetHeading;
+            record.lastPosition.copy(record.mesh.position);
+        }
+    }
+
+    buildMobHealthBar() {
+        const geometry = new THREE.PlaneGeometry(1.4, 0.18);
+        const material = this.healthBarMaterial.clone();
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(0, 2.1, 0);
+        mesh.renderOrder = 5;
+        return mesh;
+    }
+
+    removeMob(id) {
+        const record = this.mobActors.get(id);
+        if (!record) {
+            return;
+        }
+        if (record.mesh.parent) {
+            record.mesh.parent.remove(record.mesh);
+        }
+        if (record.healthBar) {
+            if (record.healthBar.geometry && typeof record.healthBar.geometry.dispose === 'function') {
+                record.healthBar.geometry.dispose();
+            }
+            if (record.healthBar.material && typeof record.healthBar.material.dispose === 'function') {
+                record.healthBar.material.dispose();
+            }
+        }
+        this.mobActors.delete(id);
+        if (record.chunkKey && this.chunkMobIndex.has(record.chunkKey)) {
+            this.chunkMobIndex.get(record.chunkKey).delete(id);
+        }
+    }
+
     removeEnvironmentObject(id) {
         const record = this.environmentMeshes.get(id);
         if (!record) {
@@ -325,6 +624,7 @@ export class World {
                 this.scene.remove(mesh);
                 this.chunkMeshes.delete(key);
                 this.removeEnvironmentObjectsForChunk(key);
+                this.removeMobObjectsForChunk(key);
             }
         });
     }
@@ -338,6 +638,15 @@ export class World {
         this.chunkEnvironmentIndex.delete(chunkKey);
     }
 
+    removeMobObjectsForChunk(chunkKey) {
+        if (!this.chunkMobIndex.has(chunkKey)) {
+            return;
+        }
+        const ids = Array.from(this.chunkMobIndex.get(chunkKey));
+        ids.forEach(id => this.removeMob(id));
+        this.chunkMobIndex.delete(chunkKey);
+    }
+
     upsertRemotePlayer(snapshot) {
         if (!snapshot || !snapshot.playerId || snapshot.playerId === this.localPlayerId) {
             return;
@@ -345,12 +654,27 @@ export class World {
 
         let record = this.remotePlayers.get(snapshot.playerId);
         if (!record) {
-            const group = this.buildRemoteAvatar(snapshot.displayName);
+            const group = createPlayerAvatar({
+                bodyColor: 0x2f4c7f,
+                accentColor: 0xe7f1ff,
+                trimColor: 0x8bc0ff,
+                weaponColor: 0xe5f6ff
+            });
+            const nameplate = this.buildNameplate(snapshot.displayName ?? 'Wanderer');
+            group.add(nameplate);
+            group.position.set(snapshot.x ?? 0, snapshot.y ?? 0, snapshot.z ?? 0);
+            group.rotation.y = snapshot.heading ?? 0;
             this.scene.add(group);
             record = {
                 mesh: group,
                 targetPosition: new THREE.Vector3(),
-                targetHeading: 0
+                targetHeading: 0,
+                lastPosition: group.position.clone(),
+                nameplate,
+                aimDirection: new THREE.Vector3(0, 0, -1),
+                aimOrigin: new THREE.Vector3(),
+                lastAimTarget: null,
+                lastAimTimestamp: 0
             };
             this.remotePlayers.set(snapshot.playerId, record);
         }
@@ -358,24 +682,9 @@ export class World {
         record.targetPosition.set(snapshot.x, snapshot.y, snapshot.z);
         record.targetHeading = snapshot.heading ?? 0;
         record.mesh.userData.displayName = snapshot.displayName ?? 'Wanderer';
-    }
-
-    buildRemoteAvatar(displayName) {
-        const group = new THREE.Group();
-        const bodyGeo = new THREE.CapsuleGeometry(0.35, 1.1, 8, 16);
-        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x4a8fb2, metalness: 0.1, roughness: 0.5 });
-        const body = new THREE.Mesh(bodyGeo, bodyMat);
-        body.castShadow = true;
-        body.receiveShadow = true;
-        group.add(body);
-
-        const visorGeo = new THREE.SphereGeometry(0.28, 12, 12, 0, Math.PI * 2, 0, Math.PI / 1.2);
-        const visorMat = new THREE.MeshStandardMaterial({ color: 0x1e2b44, metalness: 0.4, roughness: 0.3 });
-        const visor = new THREE.Mesh(visorGeo, visorMat);
-        visor.position.set(0, 0.5, 0.35);
-        group.add(visor);
-
-        return group;
+        if (record.nameplate && record.nameplate.material?.map) {
+            this.updateNameplateTexture(record.nameplate, snapshot.displayName ?? 'Wanderer');
+        }
     }
 
     removeRemotePlayer(playerId) {
@@ -385,6 +694,10 @@ export class World {
         }
         if (record.mesh.parent) {
             record.mesh.parent.remove(record.mesh);
+        }
+        if (record.nameplate) {
+            record.nameplate.material?.map?.dispose?.();
+            record.nameplate.material?.dispose?.();
         }
         this.remotePlayers.delete(playerId);
     }
@@ -410,12 +723,80 @@ export class World {
         const delta = this.clock.getDelta();
         this.lastDelta = delta;
         this.environmentPulse += delta;
+        const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
 
         this.remotePlayers.forEach(record => {
-            record.mesh.position.lerp(record.targetPosition, 1 - Math.exp(-delta * 6));
-            const current = record.mesh.rotation.y;
-            const target = record.targetHeading;
-            record.mesh.rotation.y = THREE.MathUtils.lerp(current, target, 1 - Math.exp(-delta * 6));
+            const lerpFactor = 1 - Math.exp(-delta * 6);
+            record.mesh.position.lerp(record.targetPosition, lerpFactor);
+            record.mesh.rotation.y = THREE.MathUtils.lerp(record.mesh.rotation.y, record.targetHeading, lerpFactor);
+            const distance = record.lastPosition.distanceTo(record.mesh.position);
+            const speed = delta > 0 ? distance / delta : 0;
+            if (record.aimOrigin) {
+                record.aimOrigin.copy(record.mesh.position);
+                record.aimOrigin.y += 1.5;
+            }
+            if (record.aimDirection) {
+                record.aimDirection.set(0, 0, -1).applyQuaternion(record.mesh.quaternion).normalize();
+            }
+            const aimContext = {
+                speed,
+                onGround: true,
+                aimOrigin: record.aimOrigin,
+                aimDirection: record.aimDirection,
+                aimStrength: 0.7
+            };
+            if (record.lastAimTarget && now - record.lastAimTimestamp < AIM_TARGET_TIMEOUT_MS) {
+                aimContext.aimTarget = record.lastAimTarget;
+                aimContext.aimStrength = 1;
+            } else if (record.lastAimTarget && now - record.lastAimTimestamp >= AIM_TARGET_TIMEOUT_MS) {
+                record.lastAimTarget = null;
+            }
+            updateHumanoidAnimation(record.mesh, delta, aimContext);
+            if (record.nameplate) {
+                record.nameplate.quaternion.copy(this.camera.quaternion);
+            }
+            record.lastPosition.copy(record.mesh.position);
+        });
+
+        this.mobActors.forEach(record => {
+            if (!record.mesh.visible) {
+                if (record.healthBar) {
+                    record.healthBar.visible = false;
+                }
+                return;
+            }
+            const lerpFactor = 1 - Math.exp(-delta * 5);
+            record.mesh.position.lerp(record.targetPosition, lerpFactor);
+            record.mesh.rotation.y = THREE.MathUtils.lerp(record.mesh.rotation.y, record.targetHeading ?? record.mesh.rotation.y, lerpFactor);
+            const distance = record.lastPosition.distanceTo(record.mesh.position);
+            const speed = delta > 0 ? distance / delta : 0;
+            if (record.aimOrigin) {
+                record.aimOrigin.copy(record.mesh.position);
+                record.aimOrigin.y += 1.55;
+            }
+            if (record.aimDirection) {
+                record.aimDirection.set(0, 0, -1).applyQuaternion(record.mesh.quaternion).normalize();
+            }
+            const aimContext = {
+                speed,
+                onGround: true,
+                aimOrigin: record.aimOrigin,
+                aimDirection: record.aimDirection,
+                aimStrength: 0.85
+            };
+            if (record.lastAimTarget && now - record.lastAimTimestamp < AIM_TARGET_TIMEOUT_MS) {
+                aimContext.aimTarget = record.lastAimTarget;
+                aimContext.aimStrength = 1;
+            } else if (record.lastAimTarget && now - record.lastAimTimestamp >= AIM_TARGET_TIMEOUT_MS) {
+                record.lastAimTarget = null;
+            }
+            updateHumanoidAnimation(record.mesh, delta, aimContext);
+            record.lastPosition.copy(record.mesh.position);
+            if (record.healthBar) {
+                record.healthBar.visible = true;
+                record.healthBar.scale.x = 1.3 * Math.max(0.1, record.healthFraction ?? 0);
+                record.healthBar.lookAt(this.camera.position);
+            }
         });
 
         this.environmentMeshes.forEach(({ mesh, pulseOffset = 0 }) => {
@@ -455,6 +836,10 @@ export class World {
             }
         });
 
-        this.renderer.render(this.scene, this.camera);
+        if (typeof this.renderer.renderAsync === 'function') {
+            this.renderer.renderAsync(this.scene, this.camera);
+        } else {
+            this.renderer.render(this.scene, this.camera);
+        }
     }
 }

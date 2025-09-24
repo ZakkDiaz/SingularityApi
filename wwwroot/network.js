@@ -134,6 +134,24 @@ export class Network {
                 }
                 break;
 
+            case 'mobUpdate':
+                if (this.callbacks.onMobUpdate) {
+                    this.callbacks.onMobUpdate(data.mobs ?? []);
+                }
+                break;
+
+            case 'mobAttack':
+                if (this.callbacks.onMobAttack) {
+                    this.callbacks.onMobAttack(data);
+                }
+                break;
+
+            case 'playerAbility':
+                if (this.callbacks.onPlayerAbility) {
+                    this.callbacks.onPlayerAbility(data);
+                }
+                break;
+
             default:
                 log(`Unknown message type: ${data.type}`);
                 break;
@@ -155,20 +173,21 @@ export class Network {
         this.send({ type: 'playerTransform', ...transform });
     }
 
-    sendInteraction(environmentId) {
-        if (!this.isOpen() || !environmentId) {
+    sendInteraction(targetId) {
+        if (!this.isOpen() || !targetId) {
             return;
         }
-        this.send({ type: 'interact', environmentId });
+        this.send({ type: 'interact', targetId, environmentId: targetId });
     }
 
-    sendAbilityUse(abilityId, environmentId) {
+    sendAbilityUse(abilityId, targetId) {
         if (!this.isOpen() || !abilityId) {
             return;
         }
         const payload = { type: 'useSkill', abilityId };
-        if (environmentId) {
-            payload.environmentId = environmentId;
+        if (targetId) {
+            payload.targetId = targetId;
+            payload.environmentId = targetId;
         }
         this.send(payload);
     }
