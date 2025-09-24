@@ -1,3 +1,5 @@
+import { log } from './utils.js';
+
 const FORWARD_KEYS = new Set(['w', 'ArrowUp']);
 const BACKWARD_KEYS = new Set(['s', 'ArrowDown']);
 const LEFT_KEYS = new Set(['a', 'ArrowLeft']);
@@ -41,6 +43,9 @@ export class Player {
         this.pendingInteraction = false;
         this.interactCooldown = 0;
         this.jumpRequested = false;
+
+        this.abilities = new Map();
+        this.abilityKeyMap = new Map();
 
         this.chunkSize = 16;
         this.loadRadius = 2;
@@ -89,6 +94,10 @@ export class Player {
     initInputListeners() {
         window.addEventListener('keydown', (evt) => {
             if (evt.repeat) return;
+            if (this.handleAbilityKeyDown(evt)) {
+                evt.preventDefault();
+                return;
+            }
             if (FORWARD_KEYS.has(evt.key)) this.keys.forward = true;
             if (BACKWARD_KEYS.has(evt.key)) this.keys.backward = true;
             if (LEFT_KEYS.has(evt.key)) this.keys.left = true;
@@ -98,7 +107,7 @@ export class Player {
                 this.jumpRequested = true;
             }
             if (evt.key === 'Shift') this.keys.sprint = true;
-            if (evt.key.toLowerCase() === 'e') this.pendingInteraction = true;
+            if (evt.key && evt.key.toLowerCase() === 'e') this.pendingInteraction = true;
         });
 
         window.addEventListener('keyup', (evt) => {
@@ -164,6 +173,7 @@ export class Player {
             this.interactCooldown = 0.5;
         }
         this.checkChunkBoundary();
+        this.updateAbilityCooldowns(delta);
     }
 
     applyMovement(delta) {
@@ -304,22 +314,27 @@ export class Player {
         if (!this.network) {
             return;
         }
+        const environmentId = this.findEnvironmentTarget();
+        if (!environmentId) {
+            return;
+        }
+        this.network.sendInteraction(environmentId);
+    }
+
+    findEnvironmentTarget(maxDistance = 14) {
         const origin = this.camera.position.clone();
         const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
-        const raycaster = new THREE.Raycaster(origin, direction, 0, 12);
+        const raycaster = new THREE.Raycaster(origin, direction, 0, maxDistance);
         const objects = this.scene.children.filter(obj => obj.userData?.environmentId);
         const intersects = raycaster.intersectObjects(objects, true);
         if (intersects.length === 0) {
-            return;
+            return null;
         }
-        const match = intersects.find(hit => {
-            return Boolean(getEnvironmentId(hit.object));
-        });
+        const match = intersects.find(hit => Boolean(getEnvironmentId(hit.object)));
         if (!match) {
-            return;
+            return null;
         }
-        const environmentId = getEnvironmentId(match.object);
-        this.network.sendInteraction(environmentId);
+        return getEnvironmentId(match.object) ?? null;
     }
 
     checkChunkBoundary() {
@@ -337,6 +352,103 @@ export class Player {
 
     getPosition() {
         return { x: this.pos.x, y: this.pos.y, z: this.pos.z };
+    }
+
+    handleAbilityKeyDown(evt) {
+        if (!evt || typeof evt.key !== 'string') {
+            return false;
+        }
+        const normalized = evt.key.toLowerCase();
+        if (!this.abilityKeyMap.has(normalized)) {
+            return false;
+        }
+        const abilityId = this.abilityKeyMap.get(normalized);
+        const executed = this.tryUseAbility(abilityId);
+        return executed || (abilityId ? this.abilities.has(abilityId) : false);
+    }
+
+    tryUseAbility(abilityId) {
+        if (!abilityId || !this.network) {
+            return false;
+        }
+        const ability = this.abilities.get(abilityId);
+        if (!ability) {
+            return false;
+        }
+        if (!ability.unlocked) {
+            log(`${ability.name} is not learned yet.`);
+            return false;
+        }
+        if ((ability.cooldownRemaining ?? 0) > 0.05) {
+            log(`${ability.name} ready in ${ability.cooldownRemaining.toFixed(1)}s.`);
+            return false;
+        }
+        const environmentId = this.findEnvironmentTarget();
+        if (!environmentId) {
+            log('No valid target in sight.');
+            return false;
+        }
+        this.network.sendAbilityUse(abilityId, environmentId);
+        if (typeof ability.cooldown === 'number') {
+            ability.cooldownRemaining = ability.cooldown;
+        }
+        return true;
+    }
+
+    setAbilities(abilities) {
+        if (!Array.isArray(abilities)) {
+            return;
+        }
+        const seen = new Set();
+        this.abilityKeyMap.clear();
+
+        abilities.forEach(ability => {
+            if (!ability || !ability.id) {
+                return;
+            }
+            const id = ability.id;
+            seen.add(id);
+            const cooldown = typeof ability.cooldown === 'number' ? Math.max(0, ability.cooldown) : 0;
+            const cooldownRemaining = typeof ability.cooldownRemaining === 'number'
+                ? Math.max(0, ability.cooldownRemaining)
+                : 0;
+            const key = ability.key ? String(ability.key) : '';
+            const normalizedKey = key ? key.toLowerCase() : '';
+            const state = {
+                id,
+                name: ability.name || id,
+                key,
+                normalizedKey,
+                cooldown,
+                cooldownRemaining,
+                unlocked: Boolean(ability.unlocked)
+            };
+            this.abilities.set(id, state);
+            if (normalizedKey) {
+                this.abilityKeyMap.set(normalizedKey, id);
+            }
+        });
+
+        for (const id of [...this.abilities.keys()]) {
+            if (!seen.has(id)) {
+                this.abilities.delete(id);
+            }
+        }
+    }
+
+    updateAbilityCooldowns(delta) {
+        if (!delta || this.abilities.size === 0) {
+            return;
+        }
+        for (const ability of this.abilities.values()) {
+            if (typeof ability.cooldownRemaining === 'number') {
+                ability.cooldownRemaining = Math.max(0, ability.cooldownRemaining - delta);
+            }
+        }
+    }
+
+    getAbilityStates() {
+        return Array.from(this.abilities.values()).map(ability => ({ ...ability }));
     }
 }
 

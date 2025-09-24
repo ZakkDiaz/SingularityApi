@@ -22,6 +22,30 @@ namespace SingularityApi.Controllers
         private const double SENTINEL_RESPAWN_SECONDS = 18.0;
         private const int SENTINEL_XP_REWARD = 35;
 
+        private static readonly AbilityDefinition[] AbilityDefinitions = new[]
+        {
+            new AbilityDefinition
+            {
+                Id = "autoAttack",
+                Name = "Auto Attack",
+                Key = "1",
+                CooldownSeconds = 1.6,
+                DamageMultiplier = 1.0,
+                UnlockLevel = 1,
+                ResetOnLevelUp = false
+            },
+            new AbilityDefinition
+            {
+                Id = "instantStrike",
+                Name = "Skyburst Strike",
+                Key = "2",
+                CooldownSeconds = 10.0,
+                DamageMultiplier = 2.6,
+                UnlockLevel = 2,
+                ResetOnLevelUp = true
+            }
+        };
+
         private static readonly ConcurrentDictionary<(int, int), ChunkData> ChunkCache = new();
         private static readonly ConcurrentDictionary<string, PlayerState> Players = new();
         private static readonly ConcurrentDictionary<string, WebSocket> Connections = new();
@@ -145,6 +169,10 @@ namespace SingularityApi.Controllers
                     await HandleInteractionAsync(connectionId, root);
                     break;
 
+                case "useSkill":
+                    await HandleAbilityMessageAsync(connectionId, root);
+                    break;
+
                 default:
                     Console.WriteLine($"Unknown message type '{msgType}' from {connectionId}");
                     break;
@@ -264,38 +292,118 @@ namespace SingularityApi.Controllers
             await SendJsonAsync(socket, payload, cancel);
         }
 
-        private static async Task HandleInteractionAsync(string playerId, JsonElement root)
+        private static Task HandleInteractionAsync(string playerId, JsonElement root)
         {
             if (!root.TryGetProperty("environmentId", out var idProp))
             {
-                return;
+                return Task.CompletedTask;
             }
 
             var environmentId = idProp.GetString();
             if (string.IsNullOrWhiteSpace(environmentId))
             {
-                return;
+                return Task.CompletedTask;
             }
 
+            return ExecuteAbilityAsync(playerId, "autoAttack", environmentId);
+        }
+
+        private static Task HandleAbilityMessageAsync(string playerId, JsonElement root)
+        {
+            if (!root.TryGetProperty("abilityId", out var abilityProp))
+            {
+                return Task.CompletedTask;
+            }
+
+            var abilityId = abilityProp.GetString();
+            if (string.IsNullOrWhiteSpace(abilityId))
+            {
+                return Task.CompletedTask;
+            }
+
+            string? environmentId = null;
+            if (root.TryGetProperty("environmentId", out var envProp) && envProp.ValueKind == JsonValueKind.String)
+            {
+                environmentId = envProp.GetString();
+            }
+
+            return ExecuteAbilityAsync(playerId, abilityId, environmentId);
+        }
+
+        private static async Task ExecuteAbilityAsync(string playerId, string abilityId, string? environmentId)
+        {
             if (!Players.TryGetValue(playerId, out var playerState))
             {
                 return;
             }
 
-            double attackPower;
-            lock (playerState)
+            var abilityDefinition = AbilityDefinitions.FirstOrDefault(a =>
+                string.Equals(a.Id, abilityId, StringComparison.OrdinalIgnoreCase));
+            if (abilityDefinition == null)
             {
-                attackPower = playerState.Stats.Attack;
+                return;
             }
 
-            if (EnvironmentManager.TryStrike(environmentId, attackPower, out var updated, out var defeated) && updated != null)
-            {
-                await BroadcastJsonAsync(new { type = "environmentUpdate", environmentObject = updated });
+            var now = DateTime.UtcNow;
+            PlayerStatsDto statsSnapshot;
+            List<AbilityDto> abilitySnapshots;
+            var shouldStrike = false;
+            double damage = 0;
 
-                if (defeated)
+            lock (playerState)
+            {
+                if (!playerState.Abilities.TryGetValue(abilityDefinition.Id, out var abilityState))
                 {
-                    await GrantExperienceAsync(playerState, SENTINEL_XP_REWARD, "Sentinel defeated");
+                    abilityState = new PlayerAbilityState
+                    {
+                        AbilityId = abilityDefinition.Id,
+                        CooldownUntil = now,
+                        Unlocked = false
+                    };
+                    playerState.Abilities[abilityDefinition.Id] = abilityState;
                 }
+
+                var stats = playerState.Stats;
+                abilityState.Unlocked = stats.Level >= abilityDefinition.UnlockLevel;
+
+                if (abilityState.Unlocked && abilityState.CooldownUntil <= now && !string.IsNullOrWhiteSpace(environmentId))
+                {
+                    var cooldown = Math.Max(0.2, abilityDefinition.CooldownSeconds);
+                    abilityState.CooldownUntil = now.AddSeconds(cooldown);
+                    damage = Math.Max(1.0, stats.Attack * abilityDefinition.DamageMultiplier);
+                    shouldStrike = true;
+                }
+
+                statsSnapshot = new PlayerStatsDto
+                {
+                    Level = stats.Level,
+                    Experience = stats.Experience,
+                    ExperienceToNext = stats.ExperienceToNext,
+                    Attack = stats.Attack,
+                    MaxHealth = stats.MaxHealth,
+                    CurrentHealth = stats.CurrentHealth
+                };
+
+                abilitySnapshots = BuildAbilitySnapshotsLocked(playerState, leveledUp: false, now);
+            }
+
+            await SendPlayerStatsAsync(playerState, statsSnapshot, 0, false, null, abilitySnapshots);
+
+            if (!shouldStrike || string.IsNullOrWhiteSpace(environmentId))
+            {
+                return;
+            }
+
+            if (!EnvironmentManager.TryStrike(environmentId, damage, out var updated, out var defeated) || updated == null)
+            {
+                return;
+            }
+
+            await BroadcastJsonAsync(new { type = "environmentUpdate", environmentObject = updated });
+
+            if (defeated)
+            {
+                await GrantExperienceAsync(playerState, SENTINEL_XP_REWARD, "Sentinel defeated");
             }
         }
 
@@ -307,9 +415,11 @@ namespace SingularityApi.Controllers
                 .ToList();
 
             PlayerStatsDto? statsSnapshot = null;
+            List<AbilityDto>? abilitySnapshots = null;
             if (Players.TryGetValue(connectionId, out var playerState))
             {
                 statsSnapshot = BuildStatsSnapshot(playerState);
+                abilitySnapshots = BuildAbilitySnapshots(playerState);
             }
 
             var payload = new
@@ -319,7 +429,8 @@ namespace SingularityApi.Controllers
                 worldSeed = WORLD_SEED,
                 timeOfDay = GetTimeOfDayFraction(),
                 players = otherPlayers,
-                stats = statsSnapshot
+                stats = statsSnapshot,
+                abilities = abilitySnapshots
             };
 
             await SendJsonAsync(socket, payload, cancel);
@@ -329,6 +440,7 @@ namespace SingularityApi.Controllers
         {
             PlayerStatsDto snapshot;
             bool leveledUp;
+            List<AbilityDto> abilities;
 
             lock (state)
             {
@@ -356,12 +468,20 @@ namespace SingularityApi.Controllers
                     MaxHealth = stats.MaxHealth,
                     CurrentHealth = stats.CurrentHealth
                 };
+
+                abilities = BuildAbilitySnapshotsLocked(state, leveledUp, DateTime.UtcNow);
             }
 
-            return SendPlayerStatsAsync(state, snapshot, xpAwarded, leveledUp, reason);
+            return SendPlayerStatsAsync(state, snapshot, xpAwarded, leveledUp, reason, abilities);
         }
 
-        private static Task SendPlayerStatsAsync(PlayerState state, PlayerStatsDto snapshot, int xpAwarded, bool leveledUp, string reason)
+        private static Task SendPlayerStatsAsync(
+            PlayerState state,
+            PlayerStatsDto snapshot,
+            int xpAwarded,
+            bool leveledUp,
+            string? reason,
+            IReadOnlyList<AbilityDto>? abilities = null)
         {
             if (!Connections.TryGetValue(state.Id, out var socket) || socket.State != WebSocketState.Open)
             {
@@ -374,7 +494,8 @@ namespace SingularityApi.Controllers
                 stats = snapshot,
                 xpAwarded,
                 leveledUp,
-                reason
+                reason,
+                abilities
             };
 
             return SendJsonAsync(socket, payload, CancellationToken.None);
@@ -396,6 +517,70 @@ namespace SingularityApi.Controllers
             }
         }
 
+        private static List<AbilityDto> BuildAbilitySnapshots(PlayerState state)
+        {
+            lock (state)
+            {
+                return BuildAbilitySnapshotsLocked(state, leveledUp: false, DateTime.UtcNow);
+            }
+        }
+
+        private static List<AbilityDto> BuildAbilitySnapshotsLocked(PlayerState state, bool leveledUp, DateTime now)
+        {
+            var list = new List<AbilityDto>(AbilityDefinitions.Length);
+
+            foreach (var definition in AbilityDefinitions)
+            {
+                if (!state.Abilities.TryGetValue(definition.Id, out var abilityState))
+                {
+                    abilityState = new PlayerAbilityState
+                    {
+                        AbilityId = definition.Id,
+                        Unlocked = false,
+                        CooldownUntil = now
+                    };
+                    state.Abilities[definition.Id] = abilityState;
+                }
+
+                var unlocked = state.Stats.Level >= definition.UnlockLevel;
+
+                if (!unlocked)
+                {
+                    abilityState.Unlocked = false;
+                    abilityState.CooldownUntil = now;
+                }
+                else
+                {
+                    if (!abilityState.Unlocked)
+                    {
+                        abilityState.CooldownUntil = now;
+                    }
+                    else if (leveledUp && definition.ResetOnLevelUp)
+                    {
+                        abilityState.CooldownUntil = now;
+                    }
+
+                    abilityState.Unlocked = true;
+                }
+
+                var remaining = abilityState.CooldownUntil > now
+                    ? Math.Max(0, (abilityState.CooldownUntil - now).TotalSeconds)
+                    : 0;
+
+                list.Add(new AbilityDto
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    Key = definition.Key,
+                    Cooldown = Math.Max(0, definition.CooldownSeconds),
+                    CooldownRemaining = remaining,
+                    Unlocked = abilityState.Unlocked
+                });
+            }
+
+            return list;
+        }
+
         private static PlayerStats CreateInitialStats()
         {
             var required = CalculateExperienceForNext(1);
@@ -408,6 +593,23 @@ namespace SingularityApi.Controllers
                 MaxHealth = 120,
                 CurrentHealth = 120
             };
+        }
+
+        private static Dictionary<string, PlayerAbilityState> InitializeAbilities()
+        {
+            var dict = new Dictionary<string, PlayerAbilityState>(StringComparer.OrdinalIgnoreCase);
+            var now = DateTime.UtcNow;
+            foreach (var definition in AbilityDefinitions)
+            {
+                dict[definition.Id] = new PlayerAbilityState
+                {
+                    AbilityId = definition.Id,
+                    Unlocked = definition.UnlockLevel <= 1,
+                    CooldownUntil = now
+                };
+            }
+
+            return dict;
         }
 
         private static int CalculateExperienceForNext(int level)
@@ -645,6 +847,7 @@ namespace SingularityApi.Controllers
             public double VelocityZ { get; set; }
             public DateTime LastUpdate { get; set; }
             public PlayerStats Stats { get; } = CreateInitialStats();
+            public Dictionary<string, PlayerAbilityState> Abilities { get; } = InitializeAbilities();
         }
 
         private class PlayerSnapshot
@@ -678,6 +881,34 @@ namespace SingularityApi.Controllers
             public int Attack { get; set; }
             public int MaxHealth { get; set; }
             public int CurrentHealth { get; set; }
+        }
+
+        private class PlayerAbilityState
+        {
+            public string AbilityId { get; set; } = string.Empty;
+            public bool Unlocked { get; set; }
+            public DateTime CooldownUntil { get; set; } = DateTime.UtcNow;
+        }
+
+        private class AbilityDto
+        {
+            public string Id { get; set; } = string.Empty;
+            public string Name { get; set; } = string.Empty;
+            public string Key { get; set; } = string.Empty;
+            public double Cooldown { get; set; }
+            public double CooldownRemaining { get; set; }
+            public bool Unlocked { get; set; }
+        }
+
+        private class AbilityDefinition
+        {
+            public string Id { get; set; } = string.Empty;
+            public string Name { get; set; } = string.Empty;
+            public string Key { get; set; } = string.Empty;
+            public double CooldownSeconds { get; set; }
+            public double DamageMultiplier { get; set; }
+            public int UnlockLevel { get; set; } = 1;
+            public bool ResetOnLevelUp { get; set; }
         }
 
         public class Vertex

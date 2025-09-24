@@ -162,6 +162,17 @@ export class Network {
         this.send({ type: 'interact', environmentId });
     }
 
+    sendAbilityUse(abilityId, environmentId) {
+        if (!this.isOpen() || !abilityId) {
+            return;
+        }
+        const payload = { type: 'useSkill', abilityId };
+        if (environmentId) {
+            payload.environmentId = environmentId;
+        }
+        this.send(payload);
+    }
+
     send(payload) {
         if (!this.isOpen()) {
             return;
