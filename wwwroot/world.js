@@ -11,6 +11,11 @@ const CHUNK_MATERIAL = new THREE.MeshStandardMaterial({
 
 const WEBGPU_AVAILABLE = typeof navigator !== 'undefined' && Boolean(navigator.gpu);
 let webGpuRendererPromise = null;
+const WEBGPU_RENDERER_URLS = [
+    'https://cdn.jsdelivr.net/npm/three@0.156.1/examples/jsm/renderers/webgpu/WebGPURenderer.js?module',
+    'https://cdn.jsdelivr.net/npm/three@0.156.1/examples/jsm/renderers/webgpu/WebGPURenderer.js',
+    'https://unpkg.com/three@0.156.1/examples/jsm/renderers/webgpu/WebGPURenderer.js?module'
+];
 
 const AIM_TARGET_TIMEOUT_MS = 1600;
 
@@ -19,9 +24,19 @@ function loadWebGpuRenderer() {
         return Promise.resolve(null);
     }
     if (!webGpuRendererPromise) {
-        webGpuRendererPromise = import('https://cdn.jsdelivr.net/npm/three@0.156.1/examples/jsm/renderers/WebGPURenderer.js')
-            .then(mod => mod.WebGPURenderer)
-            .catch(() => null);
+        webGpuRendererPromise = (async () => {
+            for (const url of WEBGPU_RENDERER_URLS) {
+                try {
+                    const mod = await import(url);
+                    if (mod?.WebGPURenderer) {
+                        return mod.WebGPURenderer;
+                    }
+                } catch (err) {
+                    console.warn('Failed to load WebGPURenderer from', url, err);
+                }
+            }
+            return null;
+        })();
     }
     return webGpuRendererPromise;
 }
