@@ -9,37 +9,7 @@ const CHUNK_MATERIAL = new THREE.MeshStandardMaterial({
     flatShading: false
 });
 
-const WEBGPU_AVAILABLE = typeof navigator !== 'undefined' && Boolean(navigator.gpu);
-let webGpuRendererPromise = null;
-const WEBGPU_RENDERER_URLS = [
-    'https://cdn.jsdelivr.net/npm/three@0.156.1/examples/jsm/renderers/webgpu/WebGPURenderer.js?module',
-    'https://cdn.jsdelivr.net/npm/three@0.156.1/examples/jsm/renderers/webgpu/WebGPURenderer.js',
-    'https://unpkg.com/three@0.156.1/examples/jsm/renderers/webgpu/WebGPURenderer.js?module'
-];
-
 const AIM_TARGET_TIMEOUT_MS = 1600;
-
-function loadWebGpuRenderer() {
-    if (!WEBGPU_AVAILABLE) {
-        return Promise.resolve(null);
-    }
-    if (!webGpuRendererPromise) {
-        webGpuRendererPromise = (async () => {
-            for (const url of WEBGPU_RENDERER_URLS) {
-                try {
-                    const mod = await import(url);
-                    if (mod?.WebGPURenderer) {
-                        return mod.WebGPURenderer;
-                    }
-                } catch (err) {
-                    console.warn('Failed to load WebGPURenderer from', url, err);
-                }
-            }
-            return null;
-        })();
-    }
-    return webGpuRendererPromise;
-}
 
 export class World {
     constructor() {
@@ -97,40 +67,12 @@ export class World {
         window.addEventListener('resize', () => this.handleResize());
         this.handleResize();
 
-        if (WEBGPU_AVAILABLE) {
-            this.tryUpgradeRenderer();
-        }
     }
 
     handleResize() {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-    }
-
-    tryUpgradeRenderer() {
-        loadWebGpuRenderer().then(async (RendererClass) => {
-            if (!RendererClass) {
-                return;
-            }
-            try {
-                const renderer = new RendererClass({ antialias: true });
-                await renderer.init();
-                renderer.toneMapping = THREE.ACESFilmicToneMapping;
-                renderer.setPixelRatio(window.devicePixelRatio || 1);
-                renderer.setSize(window.innerWidth, window.innerHeight);
-                if (renderer.outputColorSpace !== undefined) {
-                    renderer.outputColorSpace = THREE.SRGBColorSpace;
-                }
-                renderer.domElement.style.position = 'absolute';
-                renderer.domElement.style.inset = '0';
-                renderer.domElement.style.zIndex = '0';
-                this.swapRenderer(renderer, 'webgpu');
-                log('Upgraded renderer to WebGPU');
-            } catch (err) {
-                console.warn('Failed to initialize WebGPU renderer', err);
-            }
-        });
     }
 
     swapRenderer(newRenderer, type = 'webgl') {
