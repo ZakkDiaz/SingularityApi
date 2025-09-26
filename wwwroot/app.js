@@ -3,6 +3,7 @@ import { log } from './utils.js';
 import { Network } from './network.js';
 import { World } from './world.js';
 import { Player } from './player.js';
+import { createBaselineAbilitySnapshots } from './abilities.js';
 
 let world;
 let network;
@@ -12,6 +13,14 @@ let statsElements;
 let levelToast;
 let levelToastTimer = null;
 let abilityUi;
+const baselineStats = {
+    level: 1,
+    attack: 8,
+    maxHealth: 120,
+    currentHealth: 120,
+    experience: 0,
+    experienceToNext: 80
+};
 
 function init() {
     log('Initializing Singularity world…');
@@ -118,6 +127,9 @@ function init() {
             pointerPrompt.classList.add('hidden');
         }
     });
+
+    updateStatsHud(baselineStats);
+    applyAbilities(createBaselineAbilitySnapshots());
 
     const url = resolveWebSocketUrl();
     network.connect(url);
