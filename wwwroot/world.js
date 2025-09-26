@@ -21,7 +21,15 @@ export class World {
         // 4) Renderer
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(this.renderer.domElement);
+
+        const container = document.getElementById('game-root');
+        if (container) {
+            container.innerHTML = '';
+            container.appendChild(this.renderer.domElement);
+        }
+        else {
+            document.body.appendChild(this.renderer.domElement);
+        }
 
         // 5) chunk meshes
         this.chunkMeshes = new Map();
