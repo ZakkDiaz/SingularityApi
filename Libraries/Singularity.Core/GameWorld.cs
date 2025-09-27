@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using Singularity.Core.Noise;
 
@@ -13,6 +14,8 @@ public sealed class GameWorld : IDisposable
     private readonly EnvironmentManager _environmentManager;
     private readonly MobManager _mobManager;
     private readonly AbilityDefinition[] _abilityDefinitions;
+    private readonly object _attackLock = new();
+    private readonly Dictionary<string, AttackInstance> _activeAttacks = new();
     private static readonly PlayerStatUpgradeOption[] StatUpgradeOptions =
     {
         new()
@@ -57,18 +60,71 @@ public sealed class GameWorld : IDisposable
                 DamageMultiplier = 1.0,
                 UnlockLevel = 1,
                 ResetOnLevelUp = false,
-                ScalesWithAttackSpeed = true
+                ScalesWithAttackSpeed = true,
+                AutoCast = true,
+                Priority = 1.0,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Melee,
+                    Range = 3.6,
+                    Radius = 2.4,
+                    Speed = 0,
+                    LifetimeSeconds = 0.55,
+                    WindupSeconds = 0.15,
+                    HitsMultipleTargets = false,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
             },
             new AbilityDefinition
             {
-                Id = "instantStrike",
-                Name = "Skyburst Strike",
+                Id = "sweepingStrike",
+                Name = "Sweeping Strike",
                 Key = "2",
-                CooldownSeconds = 10.0,
-                DamageMultiplier = 2.6,
-                UnlockLevel = 2,
+                CooldownSeconds = 7.5,
+                DamageMultiplier = 1.4,
+                UnlockLevel = 3,
                 ResetOnLevelUp = true,
-                ScalesWithAttackSpeed = false
+                ScalesWithAttackSpeed = false,
+                AutoCast = true,
+                Priority = 0.5,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Sweep,
+                    Range = 4.8,
+                    Radius = 4.8,
+                    Speed = 0,
+                    LifetimeSeconds = 0.9,
+                    WindupSeconds = 0.35,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = false,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "fireball",
+                Name = "Fireball",
+                Key = "3",
+                CooldownSeconds = 9.0,
+                DamageMultiplier = 1.8,
+                UnlockLevel = 5,
+                ResetOnLevelUp = true,
+                ScalesWithAttackSpeed = false,
+                AutoCast = true,
+                Priority = 0.75,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Projectile,
+                    Range = 18,
+                    Radius = 1.2,
+                    Speed = 16,
+                    LifetimeSeconds = 2.4,
+                    WindupSeconds = 0.18,
+                    HitsMultipleTargets = false,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
             }
         };
 
@@ -251,6 +307,8 @@ public sealed class GameWorld : IDisposable
         List<PlayerStatUpgradeOption>? upgradeOptions;
         var shouldStrike = false;
         double damage = 0;
+        AttackInstance? createdAttack = null;
+        AttackSpawnDto? spawnDto = null;
 
         lock (player)
         {
@@ -268,7 +326,13 @@ public sealed class GameWorld : IDisposable
             var stats = player.Stats;
             abilityState.Unlocked = stats.Level >= abilityDefinition.UnlockLevel;
 
-            if (abilityState.Unlocked && abilityState.CooldownUntil <= now && !string.IsNullOrWhiteSpace(targetId))
+            var descriptor = abilityDefinition.Attack;
+            var originX = player.X;
+            var originY = player.Y;
+            var originZ = player.Z;
+            var heading = player.Heading;
+
+            if (abilityState.Unlocked && abilityState.CooldownUntil <= now)
             {
                 var cooldown = abilityDefinition.CooldownSeconds;
                 if (abilityDefinition.ScalesWithAttackSpeed)
@@ -278,9 +342,36 @@ public sealed class GameWorld : IDisposable
                 }
 
                 cooldown = Math.Max(0.2, cooldown);
-                abilityState.CooldownUntil = now.AddSeconds(cooldown);
-                damage = Math.Max(1.0, stats.Attack * abilityDefinition.DamageMultiplier);
-                shouldStrike = true;
+                var plannedDamage = Math.Max(1.0, stats.Attack * abilityDefinition.DamageMultiplier);
+
+                if (descriptor != null)
+                {
+                    if (TryCreateAttackInstance(
+                            abilityDefinition,
+                            descriptor,
+                            player.Id,
+                            originX,
+                            originY,
+                            originZ,
+                            heading,
+                            targetId,
+                            plannedDamage,
+                            out var attack,
+                            out var spawn))
+                    {
+                        abilityState.CooldownUntil = now.AddSeconds(cooldown);
+                        damage = plannedDamage;
+                        shouldStrike = true;
+                        createdAttack = attack;
+                        spawnDto = spawn;
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(targetId))
+                {
+                    abilityState.CooldownUntil = now.AddSeconds(cooldown);
+                    damage = plannedDamage;
+                    shouldStrike = true;
+                }
             }
 
             statsSnapshot = new PlayerStatsDto
@@ -302,12 +393,28 @@ public sealed class GameWorld : IDisposable
         var result = new AbilityExecutionResult(abilityDefinition.Id, targetId);
         result.PlayerUpdates.Add(new PlayerStatsUpdate(player, statsSnapshot, 0, false, null, abilitySnapshots, upgradeOptions));
 
-        if (!shouldStrike || string.IsNullOrWhiteSpace(targetId))
+        if (!shouldStrike)
         {
             return result;
         }
 
         result.AbilityTriggered = true;
+
+        if (createdAttack != null && spawnDto != null)
+        {
+            lock (_attackLock)
+            {
+                _activeAttacks[createdAttack.Id] = createdAttack;
+            }
+
+            result.AttackSpawn = spawnDto;
+            return result;
+        }
+
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            return result;
+        }
 
         if (_mobManager.TryStrike(targetId, damage, playerId, out var mobUpdate, out var mobDefeated, out var mobName))
         {
@@ -394,6 +501,419 @@ public sealed class GameWorld : IDisposable
         }
 
         return new PlayerStatsUpdate(state, snapshot, xpAwarded, leveledUp, message, abilities, upgradeOptions);
+    }
+
+    private bool TryCreateAttackInstance(
+        AbilityDefinition abilityDefinition,
+        AttackDescriptor descriptor,
+        string playerId,
+        double originX,
+        double originY,
+        double originZ,
+        double heading,
+        string? targetId,
+        double damage,
+        out AttackInstance? instance,
+        out AttackSpawnDto? spawn)
+    {
+        instance = null;
+        spawn = null;
+
+        if (descriptor.RequiresTarget && string.IsNullOrWhiteSpace(targetId))
+        {
+            return false;
+        }
+
+        var attackId = $"atk-{Guid.NewGuid():N}";
+        var attack = new AttackInstance(attackId, descriptor, abilityDefinition.Id, playerId, targetId, damage)
+        {
+            OriginX = originX,
+            OriginY = originY,
+            OriginZ = originZ,
+            CurrentX = originX,
+            CurrentZ = originZ
+        };
+
+        AttackTargetType targetType = AttackTargetType.None;
+        double targetX = originX;
+        double targetZ = originZ;
+        bool hasTargetVector = false;
+
+        if (!string.IsNullOrWhiteSpace(targetId))
+        {
+            if (descriptor.CanHitMobs && _mobManager.TryGetTargetInfo(targetId, out var mobInfo))
+            {
+                if (!mobInfo.IsAlive)
+                {
+                    return false;
+                }
+
+                targetType = AttackTargetType.Mob;
+                targetX = mobInfo.X;
+                targetZ = mobInfo.Z;
+                hasTargetVector = true;
+            }
+            else if (descriptor.CanHitEnvironment && _environmentManager.TryGetTargetInfo(targetId, out var envInfo))
+            {
+                if (!envInfo.IsActive)
+                {
+                    return false;
+                }
+
+                targetType = AttackTargetType.Environment;
+                targetX = envInfo.X;
+                targetZ = envInfo.Z;
+                hasTargetVector = true;
+            }
+            else if (descriptor.RequiresTarget)
+            {
+                return false;
+            }
+        }
+
+        attack.TargetType = targetType;
+
+        double dirX;
+        double dirZ;
+        if (hasTargetVector)
+        {
+            dirX = targetX - originX;
+            dirZ = targetZ - originZ;
+        }
+        else
+        {
+            dirX = Math.Sin(heading);
+            dirZ = Math.Cos(heading);
+        }
+
+        var length = Math.Sqrt(dirX * dirX + dirZ * dirZ);
+        if (length <= 1e-6)
+        {
+            dirX = Math.Sin(heading);
+            dirZ = Math.Cos(heading);
+            length = Math.Sqrt(dirX * dirX + dirZ * dirZ);
+        }
+
+        if (length <= 1e-6)
+        {
+            dirX = 0;
+            dirZ = 1;
+            length = 1;
+        }
+
+        attack.DirectionX = dirX / length;
+        attack.DirectionZ = dirZ / length;
+
+        var lifetime = descriptor.LifetimeSeconds;
+        if (lifetime <= 0)
+        {
+            if (descriptor.Behavior == AttackBehavior.Projectile && descriptor.Speed > 0)
+            {
+                lifetime = descriptor.WindupSeconds + descriptor.Range / descriptor.Speed + 0.25;
+            }
+            else
+            {
+                lifetime = descriptor.WindupSeconds + 0.45;
+            }
+        }
+
+        attack.LifetimeSeconds = Math.Max(lifetime, descriptor.WindupSeconds + 0.15);
+
+        instance = attack;
+
+        spawn = new AttackSpawnDto
+        {
+            AttackId = attackId,
+            AbilityId = abilityDefinition.Id,
+            OwnerId = playerId,
+            Behavior = descriptor.Behavior.ToString(),
+            TargetId = targetId,
+            OriginX = originX,
+            OriginY = originY,
+            OriginZ = originZ,
+            DirectionX = attack.DirectionX,
+            DirectionZ = attack.DirectionZ,
+            Radius = descriptor.Radius,
+            Range = descriptor.Range,
+            Speed = descriptor.Speed,
+            WindupSeconds = descriptor.WindupSeconds,
+            LifetimeSeconds = attack.LifetimeSeconds
+        };
+
+        return true;
+    }
+
+    private void ProcessAttacks(TimeSpan delta, DateTime now, WorldTickEventArgs eventArgs)
+    {
+        var pendingDamage = new List<PendingAttackDamage>();
+        List<string>? completedIds = null;
+        var deltaSeconds = Math.Clamp(delta.TotalSeconds, 0.01, 0.3);
+
+        lock (_attackLock)
+        {
+            if (_activeAttacks.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var attack in _activeAttacks.Values)
+            {
+                var descriptor = attack.Descriptor;
+                attack.AgeSeconds += deltaSeconds;
+
+                if (attack.AgeSeconds < descriptor.WindupSeconds)
+                {
+                    attack.CurrentX = attack.OriginX;
+                    attack.CurrentZ = attack.OriginZ;
+                }
+                else
+                {
+                    switch (descriptor.Behavior)
+                    {
+                        case AttackBehavior.Melee:
+                            if (!attack.HasTriggeredDamage)
+                            {
+                                ProcessMeleeAttack(attack, pendingDamage);
+                            }
+                            attack.Completed = true;
+                            break;
+
+                        case AttackBehavior.Sweep:
+                            if (!attack.HasTriggeredDamage)
+                            {
+                                ProcessSweepAttack(attack, pendingDamage);
+                            }
+                            break;
+
+                        case AttackBehavior.Projectile:
+                            ProcessProjectileAttack(attack, deltaSeconds, pendingDamage);
+                            break;
+                    }
+                }
+
+                var lifetime = Math.Max(attack.LifetimeSeconds, descriptor.WindupSeconds + 0.2);
+                if (attack.AgeSeconds >= lifetime || attack.Completed)
+                {
+                    (completedIds ??= new List<string>()).Add(attack.Id);
+                }
+                else
+                {
+                    eventArgs.AttackSnapshots.Add(new AttackSnapshotDto
+                    {
+                        AttackId = attack.Id,
+                        AbilityId = attack.AbilityId,
+                        Behavior = descriptor.Behavior.ToString(),
+                        X = attack.CurrentX,
+                        Z = attack.CurrentZ,
+                        Radius = descriptor.Radius,
+                        Progress = Math.Clamp(attack.AgeSeconds / lifetime, 0, 1)
+                    });
+                }
+            }
+
+            if (completedIds != null)
+            {
+                foreach (var id in completedIds)
+                {
+                    _activeAttacks.Remove(id);
+                }
+            }
+        }
+
+        foreach (var pending in pendingDamage)
+        {
+            switch (pending.TargetType)
+            {
+                case AttackTargetType.Mob:
+                    ApplyDamageToMob(pending.Attack, pending.TargetId, now, eventArgs);
+                    break;
+                case AttackTargetType.Environment:
+                    ApplyDamageToEnvironment(pending.Attack, pending.TargetId, now, eventArgs);
+                    break;
+            }
+        }
+
+        if (completedIds != null)
+        {
+            eventArgs.CompletedAttackIds.AddRange(completedIds);
+        }
+    }
+
+    private void ProcessMeleeAttack(AttackInstance attack, List<PendingAttackDamage> pendingDamage)
+    {
+        attack.CurrentX = attack.OriginX;
+        attack.CurrentZ = attack.OriginZ;
+        attack.HasTriggeredDamage = true;
+
+        var descriptor = attack.Descriptor;
+        var rangeSq = Math.Max(0.01, descriptor.Range * descriptor.Range);
+
+        if (!string.IsNullOrWhiteSpace(attack.TargetId))
+        {
+            if (attack.TargetType != AttackTargetType.Environment && descriptor.CanHitMobs &&
+                _mobManager.TryGetTargetInfo(attack.TargetId, out var mobInfo) && mobInfo.IsAlive)
+            {
+                var dx = mobInfo.X - attack.OriginX;
+                var dz = mobInfo.Z - attack.OriginZ;
+                if (dx * dx + dz * dz <= rangeSq && attack.HitTargets.Add(attack.TargetId))
+                {
+                    pendingDamage.Add(new PendingAttackDamage(attack, attack.TargetId, AttackTargetType.Mob));
+                }
+            }
+            else if (attack.TargetType != AttackTargetType.Mob && descriptor.CanHitEnvironment &&
+                     _environmentManager.TryGetTargetInfo(attack.TargetId, out var envInfo) && envInfo.IsActive)
+            {
+                var dx = envInfo.X - attack.OriginX;
+                var dz = envInfo.Z - attack.OriginZ;
+                if (dx * dx + dz * dz <= rangeSq && attack.HitTargets.Add(attack.TargetId))
+                {
+                    pendingDamage.Add(new PendingAttackDamage(attack, attack.TargetId, AttackTargetType.Environment));
+                }
+            }
+        }
+        else
+        {
+            ProcessAreaHits(attack, attack.OriginX, attack.OriginZ, descriptor.Range, pendingDamage);
+        }
+    }
+
+    private void ProcessSweepAttack(AttackInstance attack, List<PendingAttackDamage> pendingDamage)
+    {
+        attack.CurrentX = attack.OriginX;
+        attack.CurrentZ = attack.OriginZ;
+        if (!attack.HasTriggeredDamage)
+        {
+            ProcessAreaHits(attack, attack.OriginX, attack.OriginZ, attack.Descriptor.Range, pendingDamage);
+            attack.HasTriggeredDamage = true;
+        }
+    }
+
+    private void ProcessProjectileAttack(AttackInstance attack, double deltaSeconds, List<PendingAttackDamage> pendingDamage)
+    {
+        var descriptor = attack.Descriptor;
+        if (descriptor.Speed <= 0)
+        {
+            attack.CurrentX = attack.OriginX;
+            attack.CurrentZ = attack.OriginZ;
+            if (!attack.HasTriggeredDamage)
+            {
+                ProcessAreaHits(attack, attack.CurrentX, attack.CurrentZ, descriptor.Radius, pendingDamage);
+                if (attack.HitTargets.Count > 0)
+                {
+                    attack.HasTriggeredDamage = true;
+                }
+            }
+            attack.Completed = true;
+            return;
+        }
+
+        var travel = Math.Max(0, descriptor.Speed * deltaSeconds);
+        var remaining = Math.Max(0, descriptor.Range - attack.DistanceTravelled);
+        if (travel > remaining)
+        {
+            travel = remaining;
+        }
+
+        attack.DistanceTravelled += travel;
+        attack.CurrentX += attack.DirectionX * travel;
+        attack.CurrentZ += attack.DirectionZ * travel;
+
+        if (attack.DistanceTravelled >= descriptor.Range)
+        {
+            attack.Completed = true;
+        }
+
+        ProcessAreaHits(attack, attack.CurrentX, attack.CurrentZ, descriptor.Radius, pendingDamage);
+
+        if (attack.HitTargets.Count > 0)
+        {
+            attack.HasTriggeredDamage = true;
+            if (!descriptor.HitsMultipleTargets)
+            {
+                attack.Completed = true;
+            }
+        }
+    }
+
+    private void ProcessAreaHits(AttackInstance attack, double centerX, double centerZ, double radius, List<PendingAttackDamage> pendingDamage)
+    {
+        var descriptor = attack.Descriptor;
+        var effectiveRadius = Math.Max(radius, descriptor.Radius);
+        if (effectiveRadius <= 0)
+        {
+            effectiveRadius = 0.8;
+        }
+
+        if (descriptor.CanHitMobs)
+        {
+            var mobs = _mobManager.CollectTargetsInRange(centerX, centerZ, effectiveRadius);
+            foreach (var mob in mobs)
+            {
+                if (!attack.HitTargets.Add(mob.Id))
+                {
+                    continue;
+                }
+
+                pendingDamage.Add(new PendingAttackDamage(attack, mob.Id, AttackTargetType.Mob));
+                if (!descriptor.HitsMultipleTargets)
+                {
+                    return;
+                }
+            }
+        }
+
+        if (descriptor.CanHitEnvironment)
+        {
+            var environments = _environmentManager.CollectTargetsInRange(centerX, centerZ, effectiveRadius);
+            foreach (var env in environments)
+            {
+                if (!attack.HitTargets.Add(env.Id))
+                {
+                    continue;
+                }
+
+                pendingDamage.Add(new PendingAttackDamage(attack, env.Id, AttackTargetType.Environment));
+                if (!descriptor.HitsMultipleTargets)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    private void ApplyDamageToMob(AttackInstance attack, string targetId, DateTime now, WorldTickEventArgs eventArgs)
+    {
+        if (!_mobManager.TryStrike(targetId, attack.Damage, attack.OwnerPlayerId, out var mobUpdate, out var defeated, out var mobName))
+        {
+            return;
+        }
+
+        if (mobUpdate != null)
+        {
+            eventArgs.MobUpdates.Add(mobUpdate);
+        }
+
+        if (defeated && _players.TryGetValue(attack.OwnerPlayerId, out var owner))
+        {
+            var xpUpdate = GrantExperience(owner, _options.MobXpReward, $"{mobName} defeated", now);
+            eventArgs.PlayerStatUpdates.Add(xpUpdate);
+        }
+    }
+
+    private void ApplyDamageToEnvironment(AttackInstance attack, string targetId, DateTime now, WorldTickEventArgs eventArgs)
+    {
+        if (!_environmentManager.TryStrike(targetId, attack.Damage, out var updated, out var defeated) || updated == null)
+        {
+            return;
+        }
+
+        eventArgs.EnvironmentUpdates.Add(updated);
+
+        if (defeated && _players.TryGetValue(attack.OwnerPlayerId, out var owner))
+        {
+            var xpUpdate = GrantExperience(owner, _options.SentinelXpReward, "Sentinel defeated", now);
+            eventArgs.PlayerStatUpdates.Add(xpUpdate);
+        }
     }
 
     public PlayerStatsUpdate? ApplyStatUpgrade(string playerId, string statId, DateTime now)
@@ -630,6 +1150,8 @@ public sealed class GameWorld : IDisposable
             eventArgs.MobAttacks.Add(attack);
         }
 
+        ProcessAttacks(delta, now, eventArgs);
+
         if (eventArgs.HasChanges)
         {
             WorldTicked?.Invoke(this, eventArgs);
@@ -788,7 +1310,10 @@ public sealed class GameWorld : IDisposable
                 CooldownSeconds = cooldownRemaining,
                 Unlocked = abilityState.Unlocked,
                 Available = abilityState.Unlocked && cooldownRemaining <= 0,
-                ResetOnLevelUp = definition.ResetOnLevelUp
+                ResetOnLevelUp = definition.ResetOnLevelUp,
+                Range = definition.Attack?.Range ?? 6,
+                AutoCast = definition.AutoCast,
+                Priority = definition.Priority
             });
         }
 
@@ -842,8 +1367,17 @@ public sealed class WorldTickEventArgs : EventArgs
     public List<MobAttackEvent> MobAttacks { get; } = new();
     public List<PlayerStatsUpdate> PlayerStatUpdates { get; } = new();
     public List<PlayerRespawnUpdate> PlayerRespawns { get; } = new();
+    public List<AttackSnapshotDto> AttackSnapshots { get; } = new();
+    public List<string> CompletedAttackIds { get; } = new();
 
-    public bool HasChanges => EnvironmentUpdates.Count > 0 || MobUpdates.Count > 0 || MobAttacks.Count > 0 || PlayerStatUpdates.Count > 0 || PlayerRespawns.Count > 0;
+    public bool HasChanges =>
+        EnvironmentUpdates.Count > 0 ||
+        MobUpdates.Count > 0 ||
+        MobAttacks.Count > 0 ||
+        PlayerStatUpdates.Count > 0 ||
+        PlayerRespawns.Count > 0 ||
+        AttackSnapshots.Count > 0 ||
+        CompletedAttackIds.Count > 0;
 }
 
 public sealed class NearbyChunksResult
@@ -894,6 +1428,7 @@ public sealed class AbilityExecutionResult
     public MobSnapshotDto? MobUpdate { get; set; }
     public EnvironmentObjectDto? EnvironmentUpdate { get; set; }
     public List<PlayerStatsUpdate> PlayerUpdates { get; } = new();
+    public AttackSpawnDto? AttackSpawn { get; set; }
 }
 
 public sealed class PlayerStatsUpdate
@@ -935,6 +1470,20 @@ public sealed class PlayerRespawnUpdate
 
     public PlayerSnapshot Snapshot { get; }
     public PlayerStatsUpdate StatsUpdate { get; }
+}
+
+readonly struct PendingAttackDamage
+{
+    public PendingAttackDamage(AttackInstance attack, string targetId, AttackTargetType targetType)
+    {
+        Attack = attack;
+        TargetId = targetId;
+        TargetType = targetType;
+    }
+
+    public AttackInstance Attack { get; }
+    public string TargetId { get; }
+    public AttackTargetType TargetType { get; }
 }
 
 public readonly struct PlayerDamageResult

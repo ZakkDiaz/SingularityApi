@@ -3,7 +3,7 @@ import { log } from './utils.js';
 import { Network } from './network.js';
 import { World } from './world.js';
 import { Player } from './player.js';
-import { createBaselineAbilitySnapshots } from './abilities.js';
+import { createBaselineAbilitySnapshots, getAbilityDefaults } from './abilities.js';
 
 let world;
 let network;
@@ -131,10 +131,17 @@ function init() {
         onPlayerAbility: (payload) => {
             if (!payload) return;
             world.setHighlightedMob(payload.targetId ?? null);
+            if (payload.attack) {
+                world.spawnAttack(payload.attack);
+            }
         },
-        onWorldTick: (timeOfDay) => {
+        onWorldTick: (payload) => {
+            const timeOfDay = payload?.timeOfDay ?? 0;
             world.updateWorldTime(timeOfDay);
             updateTimeHud(timeOfDay);
+            if (payload?.attacks || payload?.completedAttackIds) {
+                world.updateAttacks(payload?.attacks ?? [], payload?.completedAttackIds ?? []);
+            }
         },
         onPlayerStats: (payload) => {
             const normalized = payload?.stats ? updateStatsHud(payload.stats) : latestStats;
@@ -272,16 +279,24 @@ function applyAbilities(abilities) {
         if (!id) {
             return;
         }
+        const defaults = getAbilityDefaults(id) ?? {};
+        const autoCast = ability.autoCast ?? defaults.autoCast ?? true;
+        const priority = typeof ability.priority === 'number'
+            ? ability.priority
+            : (typeof defaults.priority === 'number' ? defaults.priority : 1);
         let slot = abilityUi.slots.get(id);
         if (!slot) {
             slot = createAbilitySlot();
             abilityUi.slots.set(id, slot);
             container.appendChild(slot.root);
         }
-        slot.name.textContent = ability.name ?? id;
+        slot.name.textContent = ability.name ?? defaults.name ?? id;
         slot.root.dataset.locked = ability.unlocked ? 'false' : 'true';
         slot.root.dataset.available = ability.available ? 'true' : 'false';
-        slot.root.dataset.autocast = (ability.autoCast ?? true) ? 'true' : 'false';
+        slot.root.dataset.autocast = autoCast ? 'true' : 'false';
+        slot.root.dataset.keyLabel = ability.key ?? defaults.key ?? '';
+        slot.root.dataset.range = typeof ability.range === 'number' ? ability.range : (defaults.range ?? '');
+        slot.root.dataset.priority = priority;
     });
 
     refreshAbilityCooldowns(player.getAbilityStates());
@@ -404,7 +419,12 @@ function refreshAbilityCooldowns(abilityStates) {
         const slot = abilityUi.slots.get(state.id);
         if (!slot) return;
         slot.name.textContent = state.name ?? state.id;
-        slot.key.textContent = state.autoCast ? 'AUTO' : '';
+        const keyLabel = slot.root.dataset.keyLabel ?? '';
+        if (state.autoCast) {
+            slot.key.textContent = keyLabel ? `AUTO · ${keyLabel}` : 'AUTO';
+        } else {
+            slot.key.textContent = keyLabel;
+        }
         if (state.ready) {
             slot.root.dataset.available = 'true';
             slot.cooldown.textContent = 'Ready';

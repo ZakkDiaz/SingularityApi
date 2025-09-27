@@ -272,7 +272,7 @@ public static class WebSocketController
             return;
         }
 
-        await BroadcastJsonAsync(new { type = "playerAbility", playerId, abilityId = result.AbilityId, targetId });
+        await BroadcastJsonAsync(new { type = "playerAbility", playerId, abilityId = result.AbilityId, targetId, attack = result.AttackSpawn });
 
         if (result.MobUpdate != null)
         {
@@ -353,7 +353,13 @@ public static class WebSocketController
                 await SendPlayerStatsAsync(respawn.StatsUpdate);
             }
 
-            await BroadcastJsonAsync(new { type = "worldTick", timeOfDay = eventArgs.TimeOfDay });
+            await BroadcastJsonAsync(new
+            {
+                type = "worldTick",
+                timeOfDay = eventArgs.TimeOfDay,
+                attacks = eventArgs.AttackSnapshots,
+                completedAttackIds = eventArgs.CompletedAttackIds
+            });
         }
         catch (Exception ex)
         {

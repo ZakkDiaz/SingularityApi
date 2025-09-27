@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 
 namespace Singularity.Core;
 
@@ -91,6 +92,66 @@ public sealed class MobManager
 
         updated = BuildSnapshot(mobId);
         return true;
+    }
+
+    public bool TryGetTargetInfo(string mobId, out MobTargetInfo info)
+    {
+        info = default;
+
+        if (!_states.TryGetValue(mobId, out var state))
+        {
+            return false;
+        }
+
+        _blueprints.TryGetValue(mobId, out var blueprint);
+
+        lock (state)
+        {
+            info = new MobTargetInfo(
+                mobId,
+                blueprint?.Name ?? "Enemy",
+                state.X,
+                state.Y,
+                state.Z,
+                state.IsAlive);
+            return true;
+        }
+    }
+
+    public List<MobTargetInfo> CollectTargetsInRange(double centerX, double centerZ, double radius)
+    {
+        var list = new List<MobTargetInfo>();
+        var radiusSq = Math.Max(0, radius * radius);
+
+        foreach (var kvp in _states)
+        {
+            var mobId = kvp.Key;
+            var state = kvp.Value;
+            _blueprints.TryGetValue(mobId, out var blueprint);
+
+            lock (state)
+            {
+                if (!state.IsAlive)
+                {
+                    continue;
+                }
+
+                var dx = state.X - centerX;
+                var dz = state.Z - centerZ;
+                if (dx * dx + dz * dz <= radiusSq)
+                {
+                    list.Add(new MobTargetInfo(
+                        mobId,
+                        blueprint?.Name ?? "Enemy",
+                        state.X,
+                        state.Y,
+                        state.Z,
+                        true));
+                }
+            }
+        }
+
+        return list;
     }
 
     public MobTickResult Tick(TimeSpan delta, IReadOnlyDictionary<string, PlayerObservation> players, Func<double, double, double> sampleTerrainHeight)
@@ -310,6 +371,26 @@ public sealed class MobTickResult
 {
     public List<MobSnapshotDto> Updates { get; } = new();
     public List<MobAttackEvent> Attacks { get; } = new();
+}
+
+public readonly struct MobTargetInfo
+{
+    public MobTargetInfo(string id, string name, double x, double y, double z, bool isAlive)
+    {
+        Id = id;
+        Name = name;
+        X = x;
+        Y = y;
+        Z = z;
+        IsAlive = isAlive;
+    }
+
+    public string Id { get; }
+    public string Name { get; }
+    public double X { get; }
+    public double Y { get; }
+    public double Z { get; }
+    public bool IsAlive { get; }
 }
 
 public sealed class MobAttackEvent
