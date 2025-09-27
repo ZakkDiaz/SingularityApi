@@ -2,249 +2,78 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>Singularity World</title>
+    <title>Singularity Prototype</title>
     <style>
         :root {
             color-scheme: dark;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
         }
 
         html, body {
             margin: 0;
-            padding: 0;
-            overflow: hidden;
-            background: radial-gradient(circle at top, #2f3b58 0%, #1b1f2d 60%, #11131c 100%);
-            font-family: "Inter", "Segoe UI", sans-serif;
-            color: #e9ecf6;
             height: 100%;
-            width: 100%;
-        }
-
-        #overlay {
-            position: fixed;
-            inset: 0;
-            pointer-events: none;
-        }
-
-        #log {
-            position: absolute;
-            top: 16px;
-            left: 16px;
-            width: 320px;
-            height: 140px;
-            overflow-y: auto;
-            background: rgba(12, 16, 26, 0.55);
-            border-radius: 12px;
-            backdrop-filter: blur(6px);
-            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
-            font-size: 12px;
-            line-height: 1.4;
-            padding: 12px 16px;
-            pointer-events: auto;
-        }
-
-        #hud {
-            position: absolute;
-            bottom: 24px;
-            left: 50%;
-            transform: translateX(-50%);
-            min-width: 480px;
-            padding: 12px 18px;
-            border-radius: 999px;
-            background: rgba(17, 21, 33, 0.55);
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            font-size: 14px;
-            letter-spacing: 0.03em;
-            backdrop-filter: blur(6px);
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
-        }
-
-        #hud span {
-            opacity: 0.9;
-        }
-
-        #hud .divider {
-            width: 1px;
-            height: 18px;
-            background: rgba(255, 255, 255, 0.18);
-        }
-
-        #abilityBar {
-            position: absolute;
-            bottom: 108px;
-            left: 50%;
-            transform: translateX(-50%);
-            display: flex;
-            gap: 16px;
-            padding: 10px 18px;
-            border-radius: 18px;
-            background: rgba(17, 24, 38, 0.55);
-            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
-            backdrop-filter: blur(6px);
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.3s ease;
-        }
-
-        #abilityBar.visible {
-            opacity: 1;
-        }
-
-        .ability-slot {
-            position: relative;
-            width: 68px;
-            height: 68px;
-            border-radius: 16px;
-            background: linear-gradient(160deg, rgba(73, 121, 191, 0.35), rgba(28, 39, 58, 0.85));
-            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-            display: flex;
-            align-items: flex-end;
-            justify-content: center;
-            padding: 10px 6px 8px;
-            color: #e7eefc;
-            text-transform: uppercase;
-            font-size: 11px;
-            letter-spacing: 0.08em;
             overflow: hidden;
+            background: radial-gradient(circle at top, #2c2f44 0%, #12141e 60%, #090a12 100%);
+            color: #e8ebf5;
         }
 
-        .ability-slot.locked {
-            opacity: 0.45;
-        }
-
-        .ability-slot.ready {
-            box-shadow: 0 0 16px rgba(101, 220, 255, 0.55), inset 0 0 0 1px rgba(133, 239, 255, 0.75);
-        }
-
-        .ability-slot .ability-key {
-            position: absolute;
-            top: 6px;
-            left: 8px;
-            font-size: 12px;
-            opacity: 0.7;
-        }
-
-        .ability-slot .ability-name {
-            pointer-events: none;
-        }
-
-        .ability-slot .cooldown-fill {
+        #gameCanvas {
             position: absolute;
             inset: 0;
-            background: linear-gradient(180deg, rgba(10, 16, 28, 0.8), rgba(22, 32, 50, 0.9));
-            transform-origin: bottom;
-            transform: scaleY(0);
-            opacity: 0;
-            transition: opacity 0.2s ease;
+            width: 100%;
+            height: 100%;
+            display: block;
         }
 
-        .ability-slot .cooldown-text {
+        #uiOverlay {
             position: absolute;
             inset: 0;
             display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            font-weight: 600;
-            letter-spacing: 0.06em;
-            text-shadow: 0 0 12px rgba(0, 0, 0, 0.45);
+            flex-direction: column;
+            justify-content: space-between;
             pointer-events: none;
         }
 
-        #pointerPrompt {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            padding: 18px 28px;
-            border-radius: 16px;
-            background: rgba(13, 18, 30, 0.7);
-            text-align: center;
-            font-size: 16px;
-            letter-spacing: 0.05em;
-            backdrop-filter: blur(10px);
-            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
-            transition: opacity 0.4s ease, transform 0.4s ease;
-            pointer-events: auto;
-        }
-
-        #pointerPrompt.hidden {
-            opacity: 0;
-            transform: translate(-50%, -40%);
-            pointer-events: none;
-        }
-
-        #pointerPrompt strong {
-            display: block;
-            margin-bottom: 6px;
-            font-size: 18px;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
+        #topBar {
+            display: flex;
+            justify-content: space-between;
+            padding: 20px 28px;
+            gap: 24px;
         }
 
         #statsPanel {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            width: 220px;
+            pointer-events: auto;
+            background: rgba(18, 22, 34, 0.75);
             padding: 16px 20px;
-            border-radius: 18px;
-            background: rgba(19, 25, 37, 0.72);
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+            border-radius: 16px;
+            min-width: 220px;
             backdrop-filter: blur(8px);
-            opacity: 0;
-            transform: translateY(-10px);
-            transition: opacity 0.35s ease, transform 0.35s ease;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
         }
 
-        #statsPanel.visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
-
-        #statsPanel .label {
-            font-size: 11px;
+        #statsPanel h2 {
+            margin: 0 0 12px;
+            font-size: 14px;
             letter-spacing: 0.18em;
             text-transform: uppercase;
-            opacity: 0.65;
+            opacity: 0.7;
         }
 
-        #statsPanel .value {
-            font-size: 18px;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-        }
-
-        #statsPanel .stat-header {
+        #statsPanel .stat {
             display: flex;
             justify-content: space-between;
-            align-items: baseline;
-        }
-
-        #statsPanel .stat-grid {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            margin-top: 14px;
-        }
-
-        #statsPanel .stat-grid div {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-
-        #statsPanel .xp-wrapper {
-            margin-top: 16px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
+            font-size: 15px;
+            margin-bottom: 6px;
         }
 
         #statsPanel .xp-bar {
+            margin-top: 10px;
             width: 100%;
-            height: 8px;
+            height: 10px;
             border-radius: 999px;
             background: rgba(255, 255, 255, 0.12);
             overflow: hidden;
@@ -252,32 +81,123 @@
 
         #xpFill {
             height: 100%;
-            width: 8%;
-            border-radius: 999px;
-            background: linear-gradient(90deg, #46aef1, #9df4ff);
-            box-shadow: 0 0 14px rgba(77, 190, 255, 0.45);
-            transition: width 0.3s ease;
+            width: 0%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #47c4ff, #96f8ff);
+            transition: width 0.25s ease;
         }
 
         #xpText {
+            margin-top: 8px;
             font-size: 12px;
             opacity: 0.75;
+            letter-spacing: 0.05em;
+        }
+
+        #timeOfDay {
+            pointer-events: auto;
+            align-self: flex-start;
+            background: rgba(18, 22, 34, 0.75);
+            padding: 12px 18px;
+            border-radius: 16px;
+            font-size: 14px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(8px);
+        }
+
+        #log {
+            pointer-events: auto;
+            align-self: flex-start;
+            margin: 0 28px 28px;
+            width: 320px;
+            max-height: 180px;
+            overflow-y: auto;
+            padding: 14px 18px;
+            border-radius: 16px;
+            background: rgba(12, 16, 24, 0.7);
+            font-size: 12px;
+            line-height: 1.5;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(6px);
+        }
+
+        #abilityBar {
+            pointer-events: auto;
+            align-self: center;
+            margin-bottom: 36px;
+            display: flex;
+            gap: 14px;
+            padding: 12px 20px;
+            border-radius: 18px;
+            background: rgba(16, 22, 34, 0.8);
+            box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(8px);
+        }
+
+        .ability-slot {
+            position: relative;
+            width: 84px;
+            height: 84px;
+            border-radius: 18px;
+            background: rgba(56, 82, 124, 0.5);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 12px;
+            color: #e9f2ff;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .ability-slot[data-available="true"] {
+            box-shadow: 0 0 18px rgba(100, 255, 196, 0.6), inset 0 0 0 1px rgba(110, 255, 214, 0.9);
+            transform: translateY(-4px);
+        }
+
+        .ability-slot[data-locked="true"] {
+            opacity: 0.45;
+        }
+
+        .ability-key {
+            font-size: 13px;
+            opacity: 0.7;
+        }
+
+        .ability-cooldown {
+            font-size: 16px;
+            font-weight: 600;
             letter-spacing: 0.06em;
+        }
+
+        #controlsHint {
+            pointer-events: auto;
+            align-self: center;
+            margin-bottom: 16px;
+            padding: 8px 16px;
+            border-radius: 12px;
+            background: rgba(15, 20, 30, 0.65);
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
 
         #levelToast {
             position: absolute;
-            top: 120px;
+            top: 18%;
             left: 50%;
             transform: translateX(-50%) scale(0.9);
             padding: 12px 26px;
             border-radius: 999px;
-            background: rgba(30, 44, 70, 0.78);
-            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
-            text-transform: uppercase;
-            letter-spacing: 0.22em;
-            font-weight: 600;
+            background: rgba(34, 48, 74, 0.85);
             font-size: 13px;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
             opacity: 0;
             transition: opacity 0.3s ease, transform 0.3s ease;
             pointer-events: none;
@@ -290,48 +210,25 @@
     </style>
 </head>
 <body>
-    <div id="overlay">
-        <div id="pointerPrompt">
-            <strong>Click to Dive In</strong>
-            WASD to move · Space to jump · Shift to sprint · 1 auto attack · E interact
-        </div>
-        <div id="statsPanel">
-            <div class="stat-header">
-                <span class="label">Level</span>
-                <span class="value" id="statLevel">1</span>
-            </div>
-            <div class="stat-grid">
-                <div>
-                    <span class="label">Attack</span>
-                    <span class="value" id="statAttack">0</span>
-                </div>
-                <div>
-                    <span class="label">Vitality</span>
-                    <span class="value" id="statHealth">0 / 0</span>
-                </div>
-            </div>
-            <div class="xp-wrapper">
-                <span class="label">Experience</span>
+    <canvas id="gameCanvas"></canvas>
+    <div id="uiOverlay">
+        <div id="topBar">
+            <div id="statsPanel">
+                <h2>Adventurer</h2>
+                <div class="stat"><span>Level</span><span id="levelValue">1</span></div>
+                <div class="stat"><span>Attack</span><span id="attackValue">8</span></div>
+                <div class="stat"><span>Health</span><span id="healthValue">120 / 120</span></div>
                 <div class="xp-bar"><div id="xpFill"></div></div>
-                <div id="xpText">0 / 0 XP</div>
+                <div id="xpText">0 / 80 XP</div>
             </div>
+            <div id="timeOfDay">--:-- · Night</div>
         </div>
-        <div id="levelToast">Level Up!</div>
+        <div id="controlsHint">WASD move · Skills auto-attack nearby enemies · Gain XP to level up</div>
         <div id="abilityBar"></div>
-        <div id="hud">
-            <span id="timeOfDay">--:-- · Night</span>
-            <span class="divider"></span>
-            <span>WASD move · Space jump · Shift sprint · 1 strike · 2 skyburst (lvl 2) · E interact</span>
-        </div>
         <div id="log"></div>
     </div>
+    <div id="levelToast">Level Up!</div>
 
-    <script src="https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.min.js"></script>
-
-    <script type="module" src="./utils.js"></script>
-    <script type="module" src="./network.js"></script>
-    <script type="module" src="./world.js"></script>
-    <script type="module" src="./player.js"></script>
     <script type="module" src="./app.js"></script>
 </body>
 </html>

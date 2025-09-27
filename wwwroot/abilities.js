@@ -1,24 +1,36 @@
 // abilities.js
 
-export const BASELINE_ABILITIES = [
-    {
-        id: 'autoAttack',
+export const ABILITY_DEFAULTS = {
+    autoAttack: {
         name: 'Auto Attack',
         key: '1',
+        range: 7,
         cooldown: 1.6,
-        cooldownRemaining: 0,
-        unlocked: true
+        unlocked: true,
+        resetOnLevelUp: false
     },
-    {
-        id: 'instantStrike',
+    instantStrike: {
         name: 'Skyburst Strike',
         key: '2',
+        range: 9,
         cooldown: 10,
-        cooldownRemaining: 10,
-        unlocked: false
+        unlocked: false,
+        resetOnLevelUp: true
     }
-];
+};
 
 export function createBaselineAbilitySnapshots() {
-    return BASELINE_ABILITIES.map(ability => ({ ...ability }));
+    return Object.entries(ABILITY_DEFAULTS).map(([abilityId, def]) => ({
+        abilityId,
+        name: def.name,
+        key: def.key,
+        cooldownSeconds: 0,
+        unlocked: Boolean(def.unlocked),
+        available: Boolean(def.unlocked),
+        resetOnLevelUp: Boolean(def.resetOnLevelUp)
+    }));
+}
+
+export function getAbilityDefaults(abilityId) {
+    return ABILITY_DEFAULTS[abilityId] ?? null;
 }
