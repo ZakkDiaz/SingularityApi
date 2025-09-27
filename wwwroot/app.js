@@ -8,11 +8,13 @@ import { createBaselineAbilitySnapshots } from './abilities.js';
 let world;
 let network;
 let player;
-let hudTime;
-let statsElements;
+let hudElements;
+let abilityUi;
 let levelToast;
 let levelToastTimer = null;
-let abilityUi;
+let debugElements;
+let debugEnabled = false;
+
 const baselineStats = {
     level: 1,
     attack: 8,
@@ -23,44 +25,54 @@ const baselineStats = {
 };
 
 function init() {
-    log('Initializing Singularity world…');
-
     world = new World();
-    hudTime = document.getElementById('timeOfDay');
-    statsElements = {
-        level: document.getElementById('statLevel'),
-        attack: document.getElementById('statAttack'),
-        health: document.getElementById('statHealth'),
+    player = new Player(world, null);
+    hudElements = {
+        level: document.getElementById('levelValue'),
+        attack: document.getElementById('attackValue'),
+        health: document.getElementById('healthValue'),
         xpText: document.getElementById('xpText'),
         xpFill: document.getElementById('xpFill'),
-        panel: document.getElementById('statsPanel')
+        time: document.getElementById('timeOfDay')
     };
     levelToast = document.getElementById('levelToast');
     abilityUi = {
         container: document.getElementById('abilityBar'),
         slots: new Map()
     };
+    debugElements = {
+        panel: document.getElementById('debugPanel'),
+        ability: document.getElementById('debugAbility'),
+        range: document.getElementById('debugRange'),
+        nearest: document.getElementById('debugNearest'),
+        nearestDistance: document.getElementById('debugDistance'),
+        target: document.getElementById('debugTarget'),
+        targetDistance: document.getElementById('debugTargetDistance')
+    };
 
     network = new Network({
         onSocketOpen: () => {
-            log('Socket open → requesting surrounding chunks');
-            network.requestNearbyChunks(2);
+            log('Connected to game server.');
+            network.requestNearbyChunks(1);
         },
         onInitialState: (state) => {
-            log(`Connected as ${state.playerId}`);
             network.playerId = state.playerId;
             world.setLocalPlayerId(state.playerId);
-            if (state.players) {
-                state.players.forEach(snapshot => world.upsertRemotePlayer(snapshot));
-            }
+            player.setPlayerId(state.playerId);
+
+            log(`Joined world as ${state.playerId}`);
+
+            (state.players ?? []).forEach(snapshot => world.upsertRemotePlayer(snapshot));
+
             if (typeof state.timeOfDay === 'number') {
                 world.updateWorldTime(state.timeOfDay);
                 updateTimeHud(state.timeOfDay);
             }
-            player.setPlayerId(state.playerId);
+
             if (state.stats) {
                 updateStatsHud(state.stats);
             }
+
             if (Array.isArray(state.abilities)) {
                 applyAbilities(state.abilities);
             }
@@ -74,59 +86,53 @@ function init() {
             }
         },
         onPlayerJoined: (snapshot) => {
+            if (!snapshot) return;
             world.upsertRemotePlayer(snapshot);
+            log(`${snapshot.displayName ?? 'Player'} joined nearby.`);
         },
         onPlayerLeft: (playerId) => {
             world.removeRemotePlayer(playerId);
+            log(`Player ${playerId} disconnected.`);
         },
-        onNearbyChunks: (chunks, chunkSize) => {
-            const effectiveChunkSize = chunkSize ?? player.getChunkSize();
-            chunks.forEach(chunk => {
-                world.addOrUpdateChunk(chunk.x, chunk.z, effectiveChunkSize, chunk.vertices);
-                world.updateEnvironmentForChunk(chunk.x, chunk.z, chunk.environmentObjects || []);
-                world.syncChunkMobs(chunk.x, chunk.z, chunk.mobs || []);
-            });
-            const cleanupDistance = (effectiveChunkSize ?? 16) * 8;
-            world.cleanupDistantChunks(player.getPosition(), cleanupDistance);
-            player.setChunkSize(effectiveChunkSize);
-        },
-        onEnvironmentUpdate: (environmentObject) => {
-            world.updateEnvironmentObject(environmentObject);
+        onNearbyChunks: (chunks) => {
+            world.ingestChunks(chunks ?? []);
         },
         onMobUpdate: (mobs) => {
             world.applyMobUpdate(mobs);
         },
         onMobAttack: (attack) => {
-            if (attack && attack.mobId) {
-                world.playMobAttack(attack.mobId, attack.targetId);
+            if (attack?.mobId) {
+                world.playMobAttack(attack.mobId);
             }
         },
         onPlayerAbility: (payload) => {
-            if (!payload) {
-                return;
-            }
-            world.playPlayerAbility(payload.playerId, payload.abilityId);
+            if (!payload) return;
+            world.setHighlightedMob(payload.targetId ?? null);
         },
         onWorldTick: (timeOfDay) => {
             world.updateWorldTime(timeOfDay);
             updateTimeHud(timeOfDay);
         },
         onPlayerStats: (payload) => {
-            if (payload && payload.stats) {
-                updateStatsHud(payload.stats, payload);
+            if (payload?.stats) {
+                updateStatsHud(payload.stats);
             }
-            if (payload && Array.isArray(payload.abilities)) {
+            if (payload?.abilities) {
                 applyAbilities(payload.abilities);
+            }
+            if (payload?.reason) {
+                log(payload.reason);
+            }
+            if (payload?.xpAwarded) {
+                log(`Gained ${payload.xpAwarded} XP.`);
+            }
+            if (payload?.leveledUp) {
+                showLevelToast(`Level ${payload.stats?.level ?? ''}!`);
             }
         }
     });
 
-    const pointerPrompt = document.getElementById('pointerPrompt');
-    player = new Player(world, network, () => {
-        if (pointerPrompt) {
-            pointerPrompt.classList.add('hidden');
-        }
-    });
+    player.network = network;
 
     updateStatsHud(baselineStats);
     applyAbilities(createBaselineAbilitySnapshots());
@@ -134,20 +140,29 @@ function init() {
     const url = resolveWebSocketUrl();
     network.connect(url);
 
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    world.setDebugMode(debugEnabled);
+
     requestAnimationFrame(animate);
 }
 
 function animate() {
     requestAnimationFrame(animate);
+    let debugSnapshot = null;
+
     if (player) {
         player.update();
         player.sendMovementToServerIfNeeded();
+        debugSnapshot = player.getDebugSnapshot();
     }
     if (world) {
-        world.render();
+        world.render(debugSnapshot);
     }
-    if (abilityUi && player) {
+    if (player && abilityUi) {
         refreshAbilityCooldowns(player.getAbilityStates());
+    }
+    if (debugEnabled) {
+        updateDebugPanel(debugSnapshot);
     }
 }
 
@@ -159,197 +174,143 @@ function resolveWebSocketUrl() {
     return `${protocol}//${window.location.host}/ws`;
 }
 
+function updateStatsHud(stats) {
+    if (!hudElements) return;
+    hudElements.level.textContent = stats.level ?? baselineStats.level;
+    hudElements.attack.textContent = stats.attack ?? baselineStats.attack;
+    hudElements.health.textContent = `${stats.currentHealth ?? baselineStats.currentHealth} / ${stats.maxHealth ?? baselineStats.maxHealth}`;
+
+    const currentXp = stats.experience ?? baselineStats.experience;
+    const xpToNext = stats.experienceToNext ?? baselineStats.experienceToNext;
+    const fraction = xpToNext > 0 ? Math.min(1, currentXp / xpToNext) : 0;
+    hudElements.xpFill.style.width = `${Math.round(fraction * 100)}%`;
+    hudElements.xpText.textContent = `${currentXp} / ${xpToNext} XP`;
+}
+
 function updateTimeHud(timeOfDay) {
-    if (!hudTime || typeof timeOfDay !== 'number') {
-        return;
-    }
-    const totalMinutes = Math.floor((timeOfDay % 1) * 24 * 60);
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    const phase = getPhaseLabel(timeOfDay);
-    hudTime.textContent = `${hours.toString().padStart(2, '0')}:${minutes
-        .toString()
-        .padStart(2, '0')} · ${phase}`;
-}
-
-function updateStatsHud(stats, context = {}) {
-    if (!statsElements || !stats) {
-        return;
-    }
-
-    if (statsElements.panel) {
-        statsElements.panel.classList.add('visible');
-    }
-
-    if (statsElements.level) {
-        statsElements.level.textContent = stats.level ?? 1;
-    }
-    if (statsElements.attack) {
-        statsElements.attack.textContent = stats.attack ?? 0;
-    }
-    if (statsElements.health) {
-        const current = stats.currentHealth ?? stats.maxHealth ?? 0;
-        const max = stats.maxHealth ?? current;
-        statsElements.health.textContent = `${current} / ${max}`;
-    }
-    if (statsElements.xpText) {
-        if (stats.experienceToNext && stats.experienceToNext > 0) {
-            statsElements.xpText.textContent = `${stats.experience ?? 0} / ${stats.experienceToNext} XP`;
-        } else {
-            statsElements.xpText.textContent = `${stats.experience ?? 0} XP`;
-        }
-    }
-    if (statsElements.xpFill) {
-        const denom = stats.experienceToNext ?? 0;
-        const percent = denom > 0 ? Math.min(1, (stats.experience ?? 0) / denom) : 1;
-        const clamped = Math.max(0.08, percent);
-        statsElements.xpFill.style.width = `${clamped * 100}%`;
-    }
-
-    if (context && typeof context.xpAwarded === 'number' && context.xpAwarded > 0) {
-        const suffix = context.reason ? ` · ${context.reason}` : '';
-        log(`+${context.xpAwarded} XP${suffix}`);
-    }
-
-    if (context && context.leveledUp) {
-        log(`Level up! You reached level ${stats.level}. Attack ${stats.attack}.`);
-        showLevelToast(`Level ${stats.level}`);
-    }
-}
-
-function showLevelToast(message) {
-    if (!levelToast) {
-        return;
-    }
-    levelToast.textContent = message;
-    levelToast.classList.add('visible');
-    if (levelToastTimer) {
-        window.clearTimeout(levelToastTimer);
-    }
-    levelToastTimer = window.setTimeout(() => {
-        if (levelToast) {
-            levelToast.classList.remove('visible');
-        }
-        levelToastTimer = null;
-    }, 2200);
+    if (!hudElements?.time) return;
+    const totalMinutes = (timeOfDay ?? 0) * 24 * 60;
+    const hours = Math.floor(totalMinutes / 60) % 24;
+    const minutes = Math.floor(totalMinutes % 60);
+    const label = hours >= 6 && hours < 18 ? 'Day' : 'Night';
+    hudElements.time.textContent = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} · ${label}`;
 }
 
 function applyAbilities(abilities) {
     if (!Array.isArray(abilities)) {
         return;
     }
-    updateAbilityBar(abilities);
-    if (player) {
-        player.setAbilities(abilities);
-    }
-}
+    player.setAbilitySnapshots(abilities);
 
-function updateAbilityBar(abilities) {
-    if (!abilityUi || !abilityUi.container) {
-        return;
-    }
+    const container = abilityUi.container;
+    if (!container) return;
 
-    const seen = new Set();
     abilities.forEach(ability => {
-        if (!ability || !ability.id) {
+        const id = ability.abilityId ?? ability.id;
+        if (!id) {
             return;
         }
-        seen.add(ability.id);
-        let slot = abilityUi.slots.get(ability.id);
+        let slot = abilityUi.slots.get(id);
         if (!slot) {
-            slot = createAbilitySlot(ability);
-            abilityUi.container.appendChild(slot);
-            abilityUi.slots.set(ability.id, slot);
+            slot = createAbilitySlot();
+            abilityUi.slots.set(id, slot);
+            container.appendChild(slot.root);
         }
-
-        const nameEl = slot.querySelector('.ability-name');
-        const keyEl = slot.querySelector('.ability-key');
-        if (nameEl) {
-            nameEl.textContent = ability.name || ability.id;
-        }
-        if (keyEl) {
-            keyEl.textContent = ability.key || '';
-        }
-        slot.classList.toggle('locked', !ability.unlocked);
+        slot.name.textContent = ability.name ?? id;
+        slot.root.dataset.locked = ability.unlocked ? 'false' : 'true';
+        slot.root.dataset.available = ability.available ? 'true' : 'false';
+        slot.root.dataset.autocast = (ability.autoCast ?? true) ? 'true' : 'false';
     });
 
-    for (const [id, slot] of abilityUi.slots.entries()) {
-        if (!seen.has(id)) {
-            slot.remove();
-            abilityUi.slots.delete(id);
-        }
-    }
+    refreshAbilityCooldowns(player.getAbilityStates());
+}
 
-    if (abilities.length > 0) {
-        abilityUi.container.classList.add('visible');
-    }
+function createAbilitySlot() {
+    const root = document.createElement('div');
+    root.className = 'ability-slot';
+    const key = document.createElement('span');
+    key.className = 'ability-key';
+    const name = document.createElement('span');
+    name.className = 'ability-name';
+    const cooldown = document.createElement('span');
+    cooldown.className = 'ability-cooldown';
+    root.appendChild(key);
+    root.appendChild(name);
+    root.appendChild(cooldown);
+    return { root, key, name, cooldown };
 }
 
 function refreshAbilityCooldowns(abilityStates) {
-    if (!abilityUi || !abilityUi.container || !Array.isArray(abilityStates)) {
+    if (!Array.isArray(abilityStates)) {
         return;
     }
-
     abilityStates.forEach(state => {
-        if (!state || !state.id) {
-            return;
-        }
         const slot = abilityUi.slots.get(state.id);
-        if (!slot) {
-            return;
+        if (!slot) return;
+        slot.name.textContent = state.name ?? state.id;
+        slot.key.textContent = state.autoCast ? 'AUTO' : '';
+        if (state.ready) {
+            slot.root.dataset.available = 'true';
+            slot.cooldown.textContent = 'Ready';
+        } else {
+            slot.root.dataset.available = 'false';
+            const remaining = Math.max(0, state.cooldownRemaining);
+            slot.cooldown.textContent = remaining >= 1 ? `${Math.ceil(remaining)}s` : `${remaining.toFixed(1)}s`;
         }
-        const fill = slot.querySelector('.cooldown-fill');
-        const text = slot.querySelector('.cooldown-text');
-        const cooldown = typeof state.cooldown === 'number' ? state.cooldown : 0;
-        const remaining = typeof state.cooldownRemaining === 'number' ? state.cooldownRemaining : 0;
-        const percent = cooldown > 0 ? Math.min(1, remaining / cooldown) : 0;
-        if (fill) {
-            fill.style.transform = `scaleY(${percent})`;
-            fill.style.opacity = percent > 0 ? '0.7' : '0';
-        }
-        if (text) {
-            text.textContent = percent > 0.05 ? Math.ceil(remaining).toString() : '';
-        }
-        slot.classList.toggle('locked', !state.unlocked);
-        slot.classList.toggle('ready', state.unlocked && percent <= 0.01);
+        slot.root.dataset.locked = state.unlocked ? 'false' : 'true';
+        slot.root.dataset.autocast = state.autoCast ? 'true' : 'false';
     });
 }
 
-function createAbilitySlot(ability) {
-    const slot = document.createElement('div');
-    slot.className = 'ability-slot';
-    slot.dataset.abilityId = ability.id;
+function handleGlobalKeyDown(evt) {
+    if (evt.code === 'F3') {
+        debugEnabled = !debugEnabled;
+        world.setDebugMode(debugEnabled);
+        if (!debugEnabled) {
+            updateDebugPanel(null);
+        } else {
+            updateDebugPanel(player?.getDebugSnapshot() ?? null);
+        }
+        log(`Debug mode ${debugEnabled ? 'enabled' : 'disabled'}.`);
+    }
+}
 
-    const fill = document.createElement('div');
-    fill.className = 'cooldown-fill';
-    slot.appendChild(fill);
-
-    const text = document.createElement('div');
-    text.className = 'cooldown-text';
-    slot.appendChild(text);
-
-    const key = document.createElement('div');
-    key.className = 'ability-key';
-    key.textContent = ability.key || '';
-    slot.appendChild(key);
-
-    const label = document.createElement('div');
-    label.className = 'ability-name';
-    label.textContent = ability.name || ability.id;
-    slot.appendChild(label);
-
-    if (ability && ability.unlocked === false) {
-        slot.classList.add('locked');
+function updateDebugPanel(info) {
+    if (!debugElements?.panel) {
+        return;
     }
 
-    return slot;
+    debugElements.panel.dataset.active = debugEnabled ? 'true' : 'false';
+
+    const abilityText = info?.abilityName || info?.abilityId || '—';
+    const rangeText = typeof info?.abilityRange === 'number' ? `${info.abilityRange.toFixed(1)}m` : '—';
+    const nearestId = info?.nearestMobId || 'None';
+    const nearestDistance = typeof info?.nearestDistance === 'number' ? `${info.nearestDistance.toFixed(2)}m` : '—';
+    const targetId = info?.targetId || 'None';
+    const targetDistance = typeof info?.targetDistance === 'number' ? `${info.targetDistance.toFixed(2)}m` : '—';
+
+    if (debugElements.ability) debugElements.ability.textContent = abilityText;
+    if (debugElements.range) debugElements.range.textContent = rangeText;
+    if (debugElements.nearest) debugElements.nearest.textContent = nearestId;
+    if (debugElements.nearestDistance) debugElements.nearestDistance.textContent = nearestDistance;
+    if (debugElements.target) debugElements.target.textContent = targetId;
+    if (debugElements.targetDistance) debugElements.targetDistance.textContent = targetDistance;
 }
 
-function getPhaseLabel(timeOfDay) {
-    if (timeOfDay < 0.2) return 'Dawn';
-    if (timeOfDay < 0.45) return 'Day';
-    if (timeOfDay < 0.7) return 'Dusk';
-    return 'Night';
+function showLevelToast(text) {
+    if (!levelToast) return;
+    levelToast.textContent = text;
+    levelToast.classList.add('visible');
+    if (levelToastTimer) {
+        window.clearTimeout(levelToastTimer);
+    }
+    levelToastTimer = window.setTimeout(() => {
+        levelToast.classList.remove('visible');
+    }, 3000);
 }
 
-window.addEventListener('load', init);
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
