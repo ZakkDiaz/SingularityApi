@@ -96,10 +96,23 @@ export class Player {
         let debugInfo = this.createDebugInfo(debugBase);
         const networkReady = this.network && typeof this.network.isOpen === 'function' && this.network.isOpen();
 
-        for (const ability of this.abilities.values()) {
-            const defaults = getAbilityDefaults(ability.id) ?? {};
-            const autoCast = ability.autoCast ?? defaults.autoCast ?? true;
-            const range = this.abilityRanges.get(ability.id) ?? defaults.range ?? 6;
+        const abilityEntries = Array.from(this.abilities.values())
+            .map(state => {
+                const defaults = getAbilityDefaults(state.id) ?? {};
+                const autoCast = state.autoCast ?? defaults.autoCast ?? true;
+                const range = this.abilityRanges.get(state.id) ?? defaults.range ?? 6;
+                const priority = typeof state.priority === 'number'
+                    ? state.priority
+                    : (typeof defaults.priority === 'number' ? defaults.priority : 1);
+                return { state, defaults, autoCast, range, priority };
+            })
+            .sort((a, b) => a.priority - b.priority || (b.range ?? 0) - (a.range ?? 0));
+
+        for (const entry of abilityEntries) {
+            const ability = entry.state;
+            const defaults = entry.defaults;
+            const autoCast = entry.autoCast;
+            const range = entry.range;
 
             if (!this.primaryAbilityId && autoCast) {
                 this.primaryAbilityId = ability.id;
@@ -134,6 +147,7 @@ export class Player {
                 const attackSpeed = Math.max(0.1, this.stats?.attackSpeed ?? 1);
                 fallbackCooldown = fallbackCooldown / attackSpeed;
             }
+
             this.network.sendAbilityUse(ability.id, targetInRange.id);
 
             ability.pending = true;
@@ -227,10 +241,15 @@ export class Player {
                 return;
             }
             const defaults = getAbilityDefaults(id) ?? {};
-            const range = defaults.range ?? this.abilityRanges.get(id) ?? 6;
+            const range = typeof snapshot.range === 'number'
+                ? snapshot.range
+                : (defaults.range ?? this.abilityRanges.get(id) ?? 6);
             this.abilityRanges.set(id, range);
 
             const autoCast = snapshot.autoCast ?? defaults.autoCast ?? true;
+            const priority = typeof snapshot.priority === 'number'
+                ? snapshot.priority
+                : (typeof defaults.priority === 'number' ? defaults.priority : 1);
             const abilityState = {
                 id,
                 name: snapshot.name ?? defaults.name ?? id,
@@ -239,7 +258,9 @@ export class Player {
                 available: snapshot.available ?? false,
                 pending: false,
                 cooldownExpiresAt: now + Math.max(0, snapshot.cooldownSeconds ?? 0) * 1000,
-                autoCast
+                autoCast,
+                range,
+                priority
             };
 
             if (abilityState.available) {
@@ -247,11 +268,12 @@ export class Player {
             }
 
             this.abilities.set(id, abilityState);
-
-            if (!this.primaryAbilityId && autoCast) {
-                this.primaryAbilityId = id;
-            }
         });
+
+        const sortedAuto = Array.from(this.abilities.values())
+            .filter(state => state.autoCast)
+            .sort((a, b) => (a.priority ?? 1) - (b.priority ?? 1));
+        this.primaryAbilityId = sortedAuto.length > 0 ? sortedAuto[0].id : null;
     }
 
     getAbilityStates() {

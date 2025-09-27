@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 
 namespace Singularity.Core;
 
@@ -94,6 +95,76 @@ public sealed class EnvironmentManager
 
         updated = BuildSnapshot(environmentId);
         return updated != null;
+    }
+
+    public bool TryGetTargetInfo(string environmentId, out EnvironmentTargetInfo info)
+    {
+        info = default;
+
+        if (!_blueprints.TryGetValue(environmentId, out var blueprint) ||
+            !_states.TryGetValue(environmentId, out var state))
+        {
+            return false;
+        }
+
+        var isSentinel = string.Equals(blueprint.Type, "sentinel", StringComparison.OrdinalIgnoreCase);
+
+        lock (state)
+        {
+            info = new EnvironmentTargetInfo(
+                blueprint.Id,
+                blueprint.Type,
+                blueprint.X,
+                blueprint.Y,
+                blueprint.Z,
+                isSentinel && state.IsActive);
+            return isSentinel;
+        }
+    }
+
+    public List<EnvironmentTargetInfo> CollectTargetsInRange(double centerX, double centerZ, double radius)
+    {
+        var results = new List<EnvironmentTargetInfo>();
+        var radiusSq = Math.Max(0, radius * radius);
+
+        foreach (var kvp in _blueprints)
+        {
+            var blueprint = kvp.Value;
+            if (!string.Equals(blueprint.Type, "sentinel", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!_states.TryGetValue(kvp.Key, out var state))
+            {
+                continue;
+            }
+
+            var dx = blueprint.X - centerX;
+            var dz = blueprint.Z - centerZ;
+            if (dx * dx + dz * dz > radiusSq)
+            {
+                continue;
+            }
+
+            lock (state)
+            {
+                if (!state.IsActive)
+                {
+                    continue;
+                }
+
+                results.Add(new EnvironmentTargetInfo(
+                    blueprint.Id,
+                    blueprint.Type,
+                    blueprint.X,
+                    blueprint.Y,
+                    blueprint.Z,
+                    true));
+            }
+        }
+
+        return results;
     }
 
     public List<EnvironmentObjectDto> CollectRespawns()
@@ -220,4 +291,24 @@ public sealed class EnvironmentManager
             }
         }
     }
+}
+
+public readonly struct EnvironmentTargetInfo
+{
+    public EnvironmentTargetInfo(string id, string type, double x, double y, double z, bool isActive)
+    {
+        Id = id;
+        Type = type;
+        X = x;
+        Y = y;
+        Z = z;
+        IsActive = isActive;
+    }
+
+    public string Id { get; }
+    public string Type { get; }
+    public double X { get; }
+    public double Y { get; }
+    public double Z { get; }
+    public bool IsActive { get; }
 }

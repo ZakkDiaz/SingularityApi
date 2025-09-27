@@ -79,6 +79,9 @@ public sealed class AbilityDto
     public bool Unlocked { get; set; }
     public bool Available { get; set; }
     public bool ResetOnLevelUp { get; set; }
+    public double Range { get; set; }
+    public bool AutoCast { get; set; }
+    public double Priority { get; set; }
 }
 
 public sealed class AbilityDefinition
@@ -91,6 +94,9 @@ public sealed class AbilityDefinition
     public int UnlockLevel { get; init; }
     public bool ResetOnLevelUp { get; init; }
     public bool ScalesWithAttackSpeed { get; init; }
+    public AttackDescriptor? Attack { get; init; }
+    public bool AutoCast { get; init; } = true;
+    public double Priority { get; init; } = 1.0;
 }
 
 public sealed class PlayerStatUpgradeOption

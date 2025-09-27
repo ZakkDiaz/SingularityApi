@@ -4,21 +4,33 @@ export const ABILITY_DEFAULTS = {
     autoAttack: {
         name: 'Auto Attack',
         key: '1',
-        range: 12,
+        range: 4,
         cooldown: 1.6,
         unlocked: true,
         resetOnLevelUp: false,
         autoCast: true,
-        scalesWithAttackSpeed: true
+        scalesWithAttackSpeed: true,
+        priority: 1
     },
-    instantStrike: {
-        name: 'Skyburst Strike',
+    sweepingStrike: {
+        name: 'Sweeping Strike',
         key: '2',
-        range: 9,
-        cooldown: 10,
+        range: 5,
+        cooldown: 7.5,
         unlocked: false,
         resetOnLevelUp: true,
-        autoCast: true
+        autoCast: true,
+        priority: 0.5
+    },
+    fireball: {
+        name: 'Fireball',
+        key: '3',
+        range: 18,
+        cooldown: 9,
+        unlocked: false,
+        resetOnLevelUp: true,
+        autoCast: true,
+        priority: 0.75
     }
 };
 
@@ -31,7 +43,9 @@ export function createBaselineAbilitySnapshots() {
         unlocked: Boolean(def.unlocked),
         available: Boolean(def.unlocked),
         resetOnLevelUp: Boolean(def.resetOnLevelUp),
-        autoCast: def.autoCast !== false
+        autoCast: def.autoCast !== false,
+        range: def.range,
+        priority: typeof def.priority === 'number' ? def.priority : 1
     }));
 }
 

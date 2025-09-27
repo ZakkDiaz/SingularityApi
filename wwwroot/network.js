@@ -124,7 +124,7 @@ export class Network {
 
             case 'worldTick':
                 if (this.callbacks.onWorldTick) {
-                    this.callbacks.onWorldTick(data.timeOfDay ?? 0);
+                    this.callbacks.onWorldTick(data);
                 }
                 break;
 

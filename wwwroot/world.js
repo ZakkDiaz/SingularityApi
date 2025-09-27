@@ -20,6 +20,7 @@ export class World {
         this.mobs = new Map();
         this.highlightedMobId = null;
         this.mobFlashTimers = new Map();
+        this.attacks = new Map();
         this.timeOfDay = 0;
         this.debugMode = false;
         this.debugInfo = null;
@@ -162,6 +163,7 @@ export class World {
 
         this.drawGrid();
         this.drawMobs();
+        this.drawAttacks();
         this.drawPlayers();
 
         if (this.debugMode) {
@@ -252,6 +254,65 @@ export class World {
             }
 
             this.drawLabel(mob.name, x, y - 20, 'rgba(255, 230, 230, 0.75)');
+        }
+    }
+
+    drawAttacks() {
+        const ctx = this.ctx;
+        const now = performance.now();
+        for (const attack of this.attacks.values()) {
+            const screen = this.worldToScreen(attack.x, attack.z);
+            const radius = Math.max(attack.radius ?? 1, 0.6) * this.scale;
+            const alpha = attack.completed && attack.expireAt
+                ? Math.max(0, (attack.expireAt - now) / 200)
+                : 1;
+            const progress = typeof attack.progress === 'number'
+                ? Math.min(1, Math.max(0, attack.progress))
+                : 0;
+
+            switch (attack.behavior) {
+                case 'projectile': {
+                    const color = `rgba(255, 196, 120, ${0.75 * alpha})`;
+                    this.drawCircle(screen.x, screen.y, Math.max(6, radius * 0.6), color);
+                    if (attack.lastX !== attack.x || attack.lastZ !== attack.z) {
+                        const tail = this.worldToScreen(attack.lastX, attack.lastZ);
+                        ctx.save();
+                        ctx.strokeStyle = `rgba(255, 196, 120, ${0.35 * alpha})`;
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        ctx.moveTo(screen.x, screen.y);
+                        ctx.lineTo(tail.x, tail.y);
+                        ctx.stroke();
+                        ctx.restore();
+                    }
+                    break;
+                }
+                case 'sweep': {
+                    ctx.save();
+                    ctx.strokeStyle = `rgba(126, 206, 255, ${0.4 * alpha})`;
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.fillStyle = `rgba(126, 206, 255, ${0.12 * alpha * (1 - progress)})`;
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                    break;
+                }
+                default: {
+                    const ringRadius = Math.max(14, radius * 0.8);
+                    ctx.save();
+                    ctx.strokeStyle = `rgba(255, 236, 180, ${0.45 * alpha})`;
+                    ctx.lineWidth = 4;
+                    ctx.beginPath();
+                    ctx.arc(screen.x, screen.y, ringRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.restore();
+                    break;
+                }
+            }
         }
     }
 
@@ -352,6 +413,108 @@ export class World {
         ctx.fillStyle = color;
         ctx.textAlign = 'center';
         ctx.fillText(text, x, y);
+    }
+
+    spawnAttack(data) {
+        if (!data) {
+            return;
+        }
+        const id = data.attackId ?? data.id;
+        if (!id) {
+            return;
+        }
+        const now = performance.now();
+        const behavior = (data.behavior ?? 'melee').toLowerCase();
+        const originX = data.originX ?? data.origin?.x ?? this.localPlayer.x;
+        const originZ = data.originZ ?? data.origin?.z ?? this.localPlayer.z;
+        const entry = {
+            id,
+            abilityId: data.abilityId ?? '',
+            ownerId: data.ownerId ?? '',
+            behavior,
+            x: originX,
+            z: originZ,
+            lastX: originX,
+            lastZ: originZ,
+            radius: data.radius ?? 1,
+            progress: 0,
+            updatedAt: now,
+            expireAt: null,
+            completed: false,
+            directionX: data.directionX ?? data.direction?.x ?? 0,
+            directionZ: data.directionZ ?? data.direction?.z ?? 0
+        };
+        this.attacks.set(id, entry);
+    }
+
+    updateAttacks(snapshots = [], completedIds = []) {
+        const now = performance.now();
+
+        if (Array.isArray(snapshots)) {
+            snapshots.forEach(snapshot => {
+                const id = snapshot.attackId ?? snapshot.id;
+                if (!id) {
+                    return;
+                }
+                const behavior = snapshot.behavior ? snapshot.behavior.toLowerCase() : null;
+                let attack = this.attacks.get(id);
+                if (!attack) {
+                    attack = {
+                        id,
+                        abilityId: snapshot.abilityId ?? '',
+                        ownerId: snapshot.ownerId ?? '',
+                        behavior: behavior ?? 'melee',
+                        x: snapshot.x ?? 0,
+                        z: snapshot.z ?? 0,
+                        lastX: snapshot.x ?? 0,
+                        lastZ: snapshot.z ?? 0,
+                        radius: snapshot.radius ?? 1,
+                        progress: snapshot.progress ?? 0,
+                        updatedAt: now,
+                        expireAt: null,
+                        completed: false,
+                        directionX: 0,
+                        directionZ: 0
+                    };
+                    this.attacks.set(id, attack);
+                } else {
+                    attack.lastX = attack.x;
+                    attack.lastZ = attack.z;
+                    attack.x = snapshot.x ?? attack.x;
+                    attack.z = snapshot.z ?? attack.z;
+                    attack.updatedAt = now;
+                    if (typeof snapshot.radius === 'number') {
+                        attack.radius = snapshot.radius;
+                    }
+                    if (typeof snapshot.progress === 'number') {
+                        attack.progress = snapshot.progress;
+                    }
+                    if (behavior) {
+                        attack.behavior = behavior;
+                    }
+                }
+            });
+        }
+
+        if (Array.isArray(completedIds)) {
+            completedIds.forEach(id => {
+                const attack = this.attacks.get(id);
+                if (attack) {
+                    attack.completed = true;
+                    attack.expireAt = now + 180;
+                }
+            });
+        }
+
+        for (const [id, attack] of this.attacks) {
+            if (attack.completed && attack.expireAt && attack.expireAt < now) {
+                this.attacks.delete(id);
+                continue;
+            }
+            if (!attack.completed && now - attack.updatedAt > 800) {
+                this.attacks.delete(id);
+            }
+        }
     }
 
     worldToScreen(x, z) {
