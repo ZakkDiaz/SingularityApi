@@ -47,6 +47,8 @@ public sealed class PlayerStats
     public int Attack { get; set; } = 10;
     public int MaxHealth { get; set; } = 100;
     public int CurrentHealth { get; set; } = 100;
+    public double AttackSpeed { get; set; } = 1.0;
+    public int UnspentStatPoints { get; set; }
 }
 
 public sealed class PlayerStatsDto
@@ -57,6 +59,8 @@ public sealed class PlayerStatsDto
     public int Attack { get; set; }
     public int MaxHealth { get; set; }
     public int CurrentHealth { get; set; }
+    public double AttackSpeed { get; set; }
+    public int UnspentStatPoints { get; set; }
 }
 
 public sealed class PlayerAbilityState
@@ -86,4 +90,12 @@ public sealed class AbilityDefinition
     public double DamageMultiplier { get; init; }
     public int UnlockLevel { get; init; }
     public bool ResetOnLevelUp { get; init; }
+    public bool ScalesWithAttackSpeed { get; init; }
+}
+
+public sealed class PlayerStatUpgradeOption
+{
+    public string Id { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+    public string Description { get; init; } = string.Empty;
 }

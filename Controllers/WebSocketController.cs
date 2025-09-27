@@ -117,6 +117,10 @@ public static class WebSocketController
                 await HandleAbilityMessageAsync(connectionId, root);
                 break;
 
+            case "upgradeStat":
+                await HandleStatUpgradeAsync(connectionId, root);
+                break;
+
             default:
                 Console.WriteLine($"Unknown message type '{msgType}' from {connectionId}");
                 break;
@@ -233,6 +237,26 @@ public static class WebSocketController
         return ExecuteAbilityAsync(playerId, abilityId, targetId);
     }
 
+    private static async Task HandleStatUpgradeAsync(string playerId, JsonElement root)
+    {
+        if (!root.TryGetProperty("statId", out var statProp) || statProp.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        var statId = statProp.GetString();
+        if (string.IsNullOrWhiteSpace(statId))
+        {
+            return;
+        }
+
+        var update = World.ApplyStatUpgrade(playerId, statId, DateTime.UtcNow);
+        if (update != null)
+        {
+            await SendPlayerStatsAsync(update);
+        }
+    }
+
     private static async Task ExecuteAbilityAsync(string playerId, string abilityId, string? targetId)
     {
         var now = DateTime.UtcNow;
@@ -270,10 +294,15 @@ public static class WebSocketController
 
         PlayerStatsDto? statsSnapshot = null;
         List<AbilityDto>? abilitySnapshots = null;
+        IReadOnlyList<PlayerStatUpgradeOption>? upgradeOptions = null;
         if (World.TryGetPlayer(connectionId, out var playerState) && playerState is { } current)
         {
             statsSnapshot = World.BuildStatsSnapshot(current);
             abilitySnapshots = World.BuildAbilitySnapshots(current);
+            if (statsSnapshot.UnspentStatPoints > 0)
+            {
+                upgradeOptions = World.StatUpgradeDefinitions;
+            }
         }
 
         var payload = new
@@ -284,7 +313,8 @@ public static class WebSocketController
             timeOfDay = World.GetTimeOfDayFraction(),
             players = otherPlayers,
             stats = statsSnapshot,
-            abilities = abilitySnapshots
+            abilities = abilitySnapshots,
+            upgradeOptions
         };
 
         await SendJsonAsync(socket, payload, cancel);
@@ -350,7 +380,8 @@ public static class WebSocketController
             xpAwarded = update.ExperienceAwarded,
             leveledUp = update.LeveledUp,
             reason = update.Reason,
-            abilities = update.Abilities
+            abilities = update.Abilities,
+            upgradeOptions = update.UpgradeOptions
         };
 
         await SendJsonAsync(socket, payload, CancellationToken.None);

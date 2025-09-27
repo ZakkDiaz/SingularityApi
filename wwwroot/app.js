@@ -14,6 +14,8 @@ let levelToast;
 let levelToastTimer = null;
 let debugElements;
 let debugEnabled = false;
+let upgradeUi;
+let upgradeSelectionPending = false;
 
 const baselineStats = {
     level: 1,
@@ -21,8 +23,18 @@ const baselineStats = {
     maxHealth: 120,
     currentHealth: 120,
     experience: 0,
-    experienceToNext: 80
+    experienceToNext: 80,
+    attackSpeed: 1.0,
+    unspentStatPoints: 0
 };
+
+let latestStats = { ...baselineStats };
+
+const DEFAULT_UPGRADE_OPTIONS = [
+    { id: 'attack', name: 'Power', description: '+2 attack' },
+    { id: 'maxHealth', name: 'Vitality', description: '+10 max health' },
+    { id: 'attackSpeed', name: 'Finesse', description: '10% faster attacks' }
+];
 
 function init() {
     world = new World();
@@ -30,6 +42,7 @@ function init() {
     hudElements = {
         level: document.getElementById('levelValue'),
         attack: document.getElementById('attackValue'),
+        attackSpeed: document.getElementById('attackSpeedValue'),
         health: document.getElementById('healthValue'),
         xpText: document.getElementById('xpText'),
         xpFill: document.getElementById('xpFill'),
@@ -39,6 +52,12 @@ function init() {
     abilityUi = {
         container: document.getElementById('abilityBar'),
         slots: new Map()
+    };
+    upgradeUi = {
+        overlay: document.getElementById('upgradeOverlay'),
+        options: document.getElementById('upgradeOptions'),
+        remaining: document.getElementById('upgradeRemaining'),
+        hint: document.getElementById('upgradeHint')
     };
     debugElements = {
         panel: document.getElementById('debugPanel'),
@@ -70,11 +89,15 @@ function init() {
             }
 
             if (state.stats) {
-                updateStatsHud(state.stats);
+                const normalized = updateStatsHud(state.stats);
+                handleUpgradeAvailability(state.upgradeOptions, normalized);
             }
 
             if (Array.isArray(state.abilities)) {
                 applyAbilities(state.abilities);
+            }
+            else if (state.upgradeOptions) {
+                handleUpgradeAvailability(state.upgradeOptions, latestStats);
             }
         },
         onPlayerState: (snapshot) => {
@@ -114,9 +137,8 @@ function init() {
             updateTimeHud(timeOfDay);
         },
         onPlayerStats: (payload) => {
-            if (payload?.stats) {
-                updateStatsHud(payload.stats);
-            }
+            const normalized = payload?.stats ? updateStatsHud(payload.stats) : latestStats;
+            handleUpgradeAvailability(payload?.upgradeOptions, normalized);
             if (payload?.abilities) {
                 applyAbilities(payload.abilities);
             }
@@ -135,6 +157,7 @@ function init() {
     player.network = network;
 
     updateStatsHud(baselineStats);
+    hideUpgradeOptions();
     applyAbilities(createBaselineAbilitySnapshots());
 
     const url = resolveWebSocketUrl();
@@ -175,16 +198,55 @@ function resolveWebSocketUrl() {
 }
 
 function updateStatsHud(stats) {
-    if (!hudElements) return;
-    hudElements.level.textContent = stats.level ?? baselineStats.level;
-    hudElements.attack.textContent = stats.attack ?? baselineStats.attack;
-    hudElements.health.textContent = `${stats.currentHealth ?? baselineStats.currentHealth} / ${stats.maxHealth ?? baselineStats.maxHealth}`;
+    if (!hudElements) return latestStats;
 
-    const currentXp = stats.experience ?? baselineStats.experience;
-    const xpToNext = stats.experienceToNext ?? baselineStats.experienceToNext;
-    const fraction = xpToNext > 0 ? Math.min(1, currentXp / xpToNext) : 0;
+    const normalized = {
+        level: stats?.level ?? baselineStats.level,
+        attack: stats?.attack ?? baselineStats.attack,
+        maxHealth: stats?.maxHealth ?? baselineStats.maxHealth,
+        currentHealth: stats?.currentHealth ?? baselineStats.currentHealth,
+        experience: stats?.experience ?? baselineStats.experience,
+        experienceToNext: stats?.experienceToNext ?? baselineStats.experienceToNext,
+        attackSpeed: stats?.attackSpeed ?? baselineStats.attackSpeed,
+        unspentStatPoints: stats?.unspentStatPoints ?? baselineStats.unspentStatPoints
+    };
+
+    const level = Math.round(normalized.level);
+    const attack = Math.round(normalized.attack);
+    const currentHealth = Math.round(normalized.currentHealth);
+    const maxHealth = Math.round(normalized.maxHealth);
+    const attackSpeed = typeof normalized.attackSpeed === 'number' ? normalized.attackSpeed : baselineStats.attackSpeed;
+    const experience = Math.max(0, Math.round(normalized.experience));
+    const experienceToNext = Math.max(0, Math.round(normalized.experienceToNext));
+
+    hudElements.level.textContent = level;
+    hudElements.attack.textContent = attack;
+    hudElements.health.textContent = `${currentHealth} / ${maxHealth}`;
+
+    if (hudElements.attackSpeed) {
+        hudElements.attackSpeed.textContent = `${attackSpeed.toFixed(2)}x`;
+    }
+
+    const fraction = experienceToNext > 0 ? Math.min(1, experience / experienceToNext) : 0;
     hudElements.xpFill.style.width = `${Math.round(fraction * 100)}%`;
-    hudElements.xpText.textContent = `${currentXp} / ${xpToNext} XP`;
+    hudElements.xpText.textContent = `${experience} / ${experienceToNext} XP`;
+
+    latestStats = {
+        level,
+        attack,
+        maxHealth,
+        currentHealth,
+        experience,
+        experienceToNext,
+        attackSpeed,
+        unspentStatPoints: Math.max(0, Math.round(Number(normalized.unspentStatPoints ?? 0)))
+    };
+
+    if (player && typeof player.setStats === 'function') {
+        player.setStats(latestStats);
+    }
+
+    return latestStats;
 }
 
 function updateTimeHud(timeOfDay) {
@@ -223,6 +285,100 @@ function applyAbilities(abilities) {
     });
 
     refreshAbilityCooldowns(player.getAbilityStates());
+}
+
+function handleUpgradeAvailability(options, stats = latestStats) {
+    const remaining = stats?.unspentStatPoints ?? 0;
+    if (remaining > 0) {
+        showUpgradeOptions(options, remaining);
+    } else {
+        hideUpgradeOptions();
+    }
+}
+
+function showUpgradeOptions(options, remainingPoints) {
+    if (!upgradeUi?.overlay || !upgradeUi?.options || !upgradeUi?.remaining) {
+        return;
+    }
+
+    const list = Array.isArray(options) && options.length > 0 ? options : DEFAULT_UPGRADE_OPTIONS;
+    upgradeSelectionPending = false;
+    upgradeUi.overlay.dataset.visible = 'true';
+    upgradeUi.overlay.dataset.processing = 'false';
+    upgradeUi.options.innerHTML = '';
+
+    list.forEach(option => {
+        const id = option?.id ?? option?.statId;
+        if (!id) {
+            return;
+        }
+        const name = option.name ?? id;
+        const description = option.description ?? '';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'upgrade-option';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'upgrade-name';
+        nameSpan.textContent = name;
+        const descSpan = document.createElement('span');
+        descSpan.className = 'upgrade-desc';
+        descSpan.textContent = description;
+        button.appendChild(nameSpan);
+        button.appendChild(descSpan);
+        button.addEventListener('click', () => chooseUpgrade(id, name));
+        upgradeUi.options.appendChild(button);
+    });
+
+    const label = remainingPoints > 1 ? `${remainingPoints} stat points available` : `${remainingPoints} stat point available`;
+    upgradeUi.remaining.textContent = label;
+    if (upgradeUi.hint) {
+        upgradeUi.hint.textContent = 'Choose a stat to upgrade';
+    }
+}
+
+function hideUpgradeOptions() {
+    if (!upgradeUi?.overlay) {
+        return;
+    }
+    upgradeSelectionPending = false;
+    upgradeUi.overlay.dataset.visible = 'false';
+    upgradeUi.overlay.dataset.processing = 'false';
+    if (upgradeUi.options) {
+        upgradeUi.options.innerHTML = '';
+    }
+    if (upgradeUi.remaining) {
+        upgradeUi.remaining.textContent = '';
+    }
+    if (upgradeUi.hint) {
+        upgradeUi.hint.textContent = '';
+    }
+}
+
+function chooseUpgrade(statId, label) {
+    if (!statId || upgradeSelectionPending) {
+        return;
+    }
+    if (!network || typeof network.sendStatUpgrade !== 'function') {
+        log('Unable to send upgrade selection right now.');
+        return;
+    }
+
+    upgradeSelectionPending = true;
+    if (upgradeUi?.overlay) {
+        upgradeUi.overlay.dataset.processing = 'true';
+    }
+    if (upgradeUi?.hint) {
+        upgradeUi.hint.textContent = 'Applying upgrade…';
+    }
+    if (upgradeUi?.options) {
+        upgradeUi.options.querySelectorAll('button').forEach(button => {
+            button.disabled = true;
+        });
+    }
+
+    const labelText = label ?? statId;
+    log(`Allocating stat point to ${labelText}.`);
+    network.sendStatUpgrade(statId);
 }
 
 function createAbilitySlot() {

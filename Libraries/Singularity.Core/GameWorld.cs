@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using Singularity.Core.Noise;
 
 namespace Singularity.Core;
@@ -11,6 +13,27 @@ public sealed class GameWorld : IDisposable
     private readonly EnvironmentManager _environmentManager;
     private readonly MobManager _mobManager;
     private readonly AbilityDefinition[] _abilityDefinitions;
+    private static readonly PlayerStatUpgradeOption[] StatUpgradeOptions =
+    {
+        new()
+        {
+            Id = "attack",
+            Name = "Power",
+            Description = "+2 attack"
+        },
+        new()
+        {
+            Id = "maxHealth",
+            Name = "Vitality",
+            Description = "+10 max health"
+        },
+        new()
+        {
+            Id = "attackSpeed",
+            Name = "Finesse",
+            Description = "10% faster attacks"
+        }
+    };
     private readonly Timer _worldTimer;
     private DateTime _lastWorldTick = DateTime.UtcNow;
     private double _timeOfDayFraction = 0.25;
@@ -33,7 +56,8 @@ public sealed class GameWorld : IDisposable
                 CooldownSeconds = 1.6,
                 DamageMultiplier = 1.0,
                 UnlockLevel = 1,
-                ResetOnLevelUp = false
+                ResetOnLevelUp = false,
+                ScalesWithAttackSpeed = true
             },
             new AbilityDefinition
             {
@@ -43,7 +67,8 @@ public sealed class GameWorld : IDisposable
                 CooldownSeconds = 10.0,
                 DamageMultiplier = 2.6,
                 UnlockLevel = 2,
-                ResetOnLevelUp = true
+                ResetOnLevelUp = true,
+                ScalesWithAttackSpeed = false
             }
         };
 
@@ -53,6 +78,8 @@ public sealed class GameWorld : IDisposable
     public IReadOnlyDictionary<string, PlayerState> Players => _players;
 
     public AbilityDefinition[] AbilityDefinitions => _abilityDefinitions;
+
+    public IReadOnlyList<PlayerStatUpgradeOption> StatUpgradeDefinitions => StatUpgradeOptions;
 
     public GameWorldOptions Options => _options;
 
@@ -107,7 +134,9 @@ public sealed class GameWorld : IDisposable
                 ExperienceToNext = state.Stats.ExperienceToNext,
                 Attack = state.Stats.Attack,
                 MaxHealth = state.Stats.MaxHealth,
-                CurrentHealth = state.Stats.CurrentHealth
+                CurrentHealth = state.Stats.CurrentHealth,
+                AttackSpeed = state.Stats.AttackSpeed,
+                UnspentStatPoints = state.Stats.UnspentStatPoints
             };
         }
     }
@@ -219,6 +248,7 @@ public sealed class GameWorld : IDisposable
         var player = playerState;
         PlayerStatsDto statsSnapshot;
         List<AbilityDto> abilitySnapshots;
+        List<PlayerStatUpgradeOption>? upgradeOptions;
         var shouldStrike = false;
         double damage = 0;
 
@@ -240,7 +270,14 @@ public sealed class GameWorld : IDisposable
 
             if (abilityState.Unlocked && abilityState.CooldownUntil <= now && !string.IsNullOrWhiteSpace(targetId))
             {
-                var cooldown = Math.Max(0.2, abilityDefinition.CooldownSeconds);
+                var cooldown = abilityDefinition.CooldownSeconds;
+                if (abilityDefinition.ScalesWithAttackSpeed)
+                {
+                    var speed = Math.Max(0.1, stats.AttackSpeed);
+                    cooldown = cooldown / speed;
+                }
+
+                cooldown = Math.Max(0.2, cooldown);
                 abilityState.CooldownUntil = now.AddSeconds(cooldown);
                 damage = Math.Max(1.0, stats.Attack * abilityDefinition.DamageMultiplier);
                 shouldStrike = true;
@@ -253,14 +290,17 @@ public sealed class GameWorld : IDisposable
                 ExperienceToNext = stats.ExperienceToNext,
                 Attack = stats.Attack,
                 MaxHealth = stats.MaxHealth,
-                CurrentHealth = stats.CurrentHealth
+                CurrentHealth = stats.CurrentHealth,
+                AttackSpeed = stats.AttackSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints
             };
 
             abilitySnapshots = BuildAbilitySnapshotsLocked(player, leveledUp: false, now);
+            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
         }
 
         var result = new AbilityExecutionResult(abilityDefinition.Id, targetId);
-        result.PlayerUpdates.Add(new PlayerStatsUpdate(player, statsSnapshot, 0, false, null, abilitySnapshots));
+        result.PlayerUpdates.Add(new PlayerStatsUpdate(player, statsSnapshot, 0, false, null, abilitySnapshots, upgradeOptions));
 
         if (!shouldStrike || string.IsNullOrWhiteSpace(targetId))
         {
@@ -301,6 +341,8 @@ public sealed class GameWorld : IDisposable
         PlayerStatsDto snapshot;
         bool leveledUp;
         List<AbilityDto> abilities;
+        List<PlayerStatUpgradeOption>? upgradeOptions;
+        var message = reason;
 
         lock (state)
         {
@@ -312,11 +354,14 @@ public sealed class GameWorld : IDisposable
             {
                 stats.Experience -= stats.ExperienceToNext;
                 stats.Level++;
-                stats.Attack += 2;
-                stats.MaxHealth += 10;
-                stats.CurrentHealth = stats.MaxHealth;
+                stats.UnspentStatPoints++;
                 stats.ExperienceToNext = CalculateExperienceForNext(stats.Level);
                 leveledUp = true;
+            }
+
+            if (leveledUp)
+            {
+                stats.CurrentHealth = stats.MaxHealth;
             }
 
             snapshot = new PlayerStatsDto
@@ -326,19 +371,123 @@ public sealed class GameWorld : IDisposable
                 ExperienceToNext = stats.ExperienceToNext,
                 Attack = stats.Attack,
                 MaxHealth = stats.MaxHealth,
-                CurrentHealth = stats.CurrentHealth
+                CurrentHealth = stats.CurrentHealth,
+                AttackSpeed = stats.AttackSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp, now);
+            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+
+            if (leveledUp && stats.UnspentStatPoints > 0)
+            {
+                const string prompt = "Level up! Choose a stat to upgrade.";
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    message = prompt;
+                }
+                else if (!message.Contains(prompt, StringComparison.OrdinalIgnoreCase))
+                {
+                    message = $"{message} {prompt}";
+                }
+            }
         }
 
-        return new PlayerStatsUpdate(state, snapshot, xpAwarded, leveledUp, reason, abilities);
+        return new PlayerStatsUpdate(state, snapshot, xpAwarded, leveledUp, message, abilities, upgradeOptions);
+    }
+
+    public PlayerStatsUpdate? ApplyStatUpgrade(string playerId, string statId, DateTime now)
+    {
+        if (!TryGetPlayer(playerId, out var state) || state is null)
+        {
+            return null;
+        }
+
+        return ApplyStatUpgrade(state, statId, now);
+    }
+
+    public PlayerStatsUpdate? ApplyStatUpgrade(PlayerState state, string statId, DateTime now)
+    {
+        PlayerStatsDto snapshot;
+        List<AbilityDto> abilities;
+        List<PlayerStatUpgradeOption>? upgradeOptions;
+        string message;
+
+        lock (state)
+        {
+            var stats = state.Stats;
+            if (stats.UnspentStatPoints <= 0)
+            {
+                return null;
+            }
+
+            if (!TryApplyStatUpgradeLocked(stats, statId, out message))
+            {
+                return null;
+            }
+
+            snapshot = new PlayerStatsDto
+            {
+                Level = stats.Level,
+                Experience = stats.Experience,
+                ExperienceToNext = stats.ExperienceToNext,
+                Attack = stats.Attack,
+                MaxHealth = stats.MaxHealth,
+                CurrentHealth = stats.CurrentHealth,
+                AttackSpeed = stats.AttackSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints
+            };
+
+            abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
+            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+        }
+
+        return new PlayerStatsUpdate(state, snapshot, 0, false, message, abilities, upgradeOptions);
+    }
+
+    private static bool TryApplyStatUpgradeLocked(PlayerStats stats, string statId, out string message)
+    {
+        message = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(statId))
+        {
+            return false;
+        }
+
+        switch (statId.Trim().ToLowerInvariant())
+        {
+            case "attack":
+                stats.Attack += 2;
+                message = "Attack increased!";
+                break;
+            case "maxhealth":
+            case "health":
+                stats.MaxHealth += 10;
+                stats.CurrentHealth = stats.MaxHealth;
+                message = "Max health increased!";
+                break;
+            case "attackspeed":
+            case "speed":
+                stats.AttackSpeed = Math.Round(Math.Max(0.1, stats.AttackSpeed + 0.1), 2, MidpointRounding.AwayFromZero);
+                message = "Attack speed improved!";
+                break;
+            default:
+                return false;
+        }
+
+        if (stats.UnspentStatPoints > 0)
+        {
+            stats.UnspentStatPoints--;
+        }
+
+        return true;
     }
 
     public PlayerRespawnUpdate HandlePlayerDefeat(PlayerState state, string mobName, DateTime now)
     {
         PlayerStatsDto snapshot;
         List<AbilityDto> abilities;
+        List<PlayerStatUpgradeOption>? upgradeOptions;
 
         var spawnX = 0.0;
         var spawnZ = 0.0;
@@ -361,14 +510,17 @@ public sealed class GameWorld : IDisposable
                 ExperienceToNext = state.Stats.ExperienceToNext,
                 Attack = state.Stats.Attack,
                 MaxHealth = state.Stats.MaxHealth,
-                CurrentHealth = state.Stats.CurrentHealth
+                CurrentHealth = state.Stats.CurrentHealth,
+                AttackSpeed = state.Stats.AttackSpeed,
+                UnspentStatPoints = state.Stats.UnspentStatPoints
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
+            upgradeOptions = state.Stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
         }
 
         var playerSnapshot = CreatePlayerSnapshot(state);
-        var statsUpdate = new PlayerStatsUpdate(state, snapshot, 0, false, $"You were defeated by {mobName}.", abilities);
+        var statsUpdate = new PlayerStatsUpdate(state, snapshot, 0, false, $"You were defeated by {mobName}.", abilities, upgradeOptions);
         return new PlayerRespawnUpdate(playerSnapshot, statsUpdate);
     }
 
@@ -377,6 +529,7 @@ public sealed class GameWorld : IDisposable
         PlayerStatsDto snapshot;
         bool defeated;
         string? reason;
+        List<PlayerStatUpgradeOption>? upgradeOptions;
 
         lock (state)
         {
@@ -392,13 +545,16 @@ public sealed class GameWorld : IDisposable
                 ExperienceToNext = stats.ExperienceToNext,
                 Attack = stats.Attack,
                 MaxHealth = stats.MaxHealth,
-                CurrentHealth = stats.CurrentHealth
+                CurrentHealth = stats.CurrentHealth,
+                AttackSpeed = stats.AttackSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints
             };
 
             reason = defeated ? null : $"{mobName} hit you for {appliedDamage}.";
+            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
         }
 
-        var update = new PlayerStatsUpdate(state, snapshot, 0, false, reason, null);
+        var update = new PlayerStatsUpdate(state, snapshot, 0, false, reason, null, upgradeOptions);
         return new PlayerDamageResult(update, defeated);
     }
 
@@ -742,7 +898,14 @@ public sealed class AbilityExecutionResult
 
 public sealed class PlayerStatsUpdate
 {
-    public PlayerStatsUpdate(PlayerState player, PlayerStatsDto snapshot, int experienceAwarded, bool leveledUp, string? reason, IReadOnlyList<AbilityDto>? abilities)
+    public PlayerStatsUpdate(
+        PlayerState player,
+        PlayerStatsDto snapshot,
+        int experienceAwarded,
+        bool leveledUp,
+        string? reason,
+        IReadOnlyList<AbilityDto>? abilities,
+        IReadOnlyList<PlayerStatUpgradeOption>? upgradeOptions)
     {
         Player = player;
         Snapshot = snapshot;
@@ -750,6 +913,7 @@ public sealed class PlayerStatsUpdate
         LeveledUp = leveledUp;
         Reason = reason;
         Abilities = abilities;
+        UpgradeOptions = upgradeOptions;
     }
 
     public PlayerState Player { get; }
@@ -758,6 +922,7 @@ public sealed class PlayerStatsUpdate
     public bool LeveledUp { get; }
     public string? Reason { get; }
     public IReadOnlyList<AbilityDto>? Abilities { get; }
+    public IReadOnlyList<PlayerStatUpgradeOption>? UpgradeOptions { get; }
 }
 
 public sealed class PlayerRespawnUpdate

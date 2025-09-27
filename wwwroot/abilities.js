@@ -8,7 +8,8 @@ export const ABILITY_DEFAULTS = {
         cooldown: 1.6,
         unlocked: true,
         resetOnLevelUp: false,
-        autoCast: true
+        autoCast: true,
+        scalesWithAttackSpeed: true
     },
     instantStrike: {
         name: 'Skyburst Strike',
