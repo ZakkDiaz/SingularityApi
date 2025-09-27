@@ -192,6 +192,13 @@ export class Network {
         this.send(payload);
     }
 
+    sendStatUpgrade(statId) {
+        if (!this.isOpen() || !statId) {
+            return;
+        }
+        this.send({ type: 'upgradeStat', statId });
+    }
+
     send(payload) {
         if (!this.isOpen()) {
             return;

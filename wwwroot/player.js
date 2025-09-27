@@ -32,6 +32,7 @@ export class Player {
         this.abilityRanges = new Map();
         this.primaryAbilityId = null;
         this.debugInfo = this.createDebugInfo();
+        this.stats = { attackSpeed: 1, unspentStatPoints: 0 };
 
         this.initInputListeners();
     }
@@ -128,7 +129,11 @@ export class Player {
                 continue;
             }
 
-            const fallbackCooldown = defaults.cooldown ?? 1.5;
+            let fallbackCooldown = defaults.cooldown ?? 1.5;
+            if (defaults.scalesWithAttackSpeed) {
+                const attackSpeed = Math.max(0.1, this.stats?.attackSpeed ?? 1);
+                fallbackCooldown = fallbackCooldown / attackSpeed;
+            }
             this.network.sendAbilityUse(ability.id, targetInRange.id);
 
             ability.pending = true;
@@ -157,6 +162,15 @@ export class Player {
         }
 
         this.debugInfo = debugInfo;
+    }
+
+    setStats(stats = {}) {
+        const attackSpeed = typeof stats.attackSpeed === 'number' ? stats.attackSpeed : (this.stats?.attackSpeed ?? 1);
+        const unspent = typeof stats.unspentStatPoints === 'number' ? stats.unspentStatPoints : (this.stats?.unspentStatPoints ?? 0);
+        this.stats = {
+            attackSpeed,
+            unspentStatPoints: unspent
+        };
     }
 
     sendMovementToServerIfNeeded() {

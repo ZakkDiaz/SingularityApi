@@ -238,6 +238,104 @@
             opacity: 0.85;
         }
 
+        #upgradeOverlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(8, 12, 20, 0.72);
+            backdrop-filter: blur(12px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s ease;
+            z-index: 50;
+        }
+
+        #upgradeOverlay[data-visible="true"] {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        #upgradePanel {
+            min-width: 320px;
+            max-width: 420px;
+            padding: 24px 28px;
+            border-radius: 20px;
+            background: rgba(22, 28, 42, 0.92);
+            box-shadow: 0 26px 60px rgba(0, 0, 0, 0.55);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            text-align: center;
+        }
+
+        #upgradePanel h3 {
+            margin: 0;
+            font-size: 16px;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+        }
+
+        #upgradeRemaining {
+            font-size: 13px;
+            letter-spacing: 0.12em;
+            opacity: 0.75;
+        }
+
+        #upgradeOptions {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .upgrade-option {
+            border: 1px solid rgba(160, 210, 255, 0.25);
+            border-radius: 14px;
+            background: rgba(50, 76, 118, 0.55);
+            color: inherit;
+            font: inherit;
+            padding: 14px 16px;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            cursor: pointer;
+            transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .upgrade-option:hover:not(:disabled) {
+            transform: translateY(-2px);
+            border-color: rgba(200, 244, 255, 0.6);
+            background: rgba(76, 114, 168, 0.65);
+        }
+
+        .upgrade-option:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
+        .upgrade-name {
+            font-size: 15px;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+        }
+
+        .upgrade-desc {
+            font-size: 13px;
+            opacity: 0.78;
+        }
+
+        #upgradeHint {
+            font-size: 12px;
+            letter-spacing: 0.1em;
+            opacity: 0.7;
+        }
+
+        #upgradeOverlay[data-processing="true"] .upgrade-option {
+            pointer-events: none;
+        }
+
         #levelToast {
             position: absolute;
             top: 18%;
@@ -268,6 +366,7 @@
                 <h2>Adventurer</h2>
                 <div class="stat"><span>Level</span><span id="levelValue">1</span></div>
                 <div class="stat"><span>Attack</span><span id="attackValue">8</span></div>
+                <div class="stat"><span>Attack Speed</span><span id="attackSpeedValue">1.00x</span></div>
                 <div class="stat"><span>Health</span><span id="healthValue">120 / 120</span></div>
                 <div class="xp-bar"><div id="xpFill"></div></div>
                 <div id="xpText">0 / 80 XP</div>
@@ -285,6 +384,14 @@
             <div class="debug-row"><span>Nearest Dist</span><span id="debugDistance">—</span></div>
             <div class="debug-row"><span>Target</span><span id="debugTarget">None</span></div>
             <div class="debug-row"><span>Target Dist</span><span id="debugTargetDistance">—</span></div>
+        </div>
+    </div>
+    <div id="upgradeOverlay" data-visible="false" data-processing="false">
+        <div id="upgradePanel">
+            <h3>Choose Upgrade</h3>
+            <div id="upgradeRemaining"></div>
+            <div id="upgradeOptions"></div>
+            <div id="upgradeHint"></div>
         </div>
     </div>
     <div id="levelToast">Level Up!</div>
