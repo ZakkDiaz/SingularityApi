@@ -14,27 +14,29 @@ public sealed class GameWorld : IDisposable
     private readonly EnvironmentManager _environmentManager;
     private readonly MobManager _mobManager;
     private readonly AbilityDefinition[] _abilityDefinitions;
+    private readonly PlayerClassDefinition[] _classDefinitions;
+    private readonly MobArchetype[] _mobArchetypes;
     private readonly object _attackLock = new();
     private readonly Dictionary<string, AttackInstance> _activeAttacks = new();
     private static readonly PlayerStatUpgradeOption[] StatUpgradeOptions =
     {
         new()
         {
-            Id = "attack",
-            Name = "Power",
-            Description = "+2 attack"
+            Id = "strength",
+            Name = "Might",
+            Description = "+2 Strength (attack & health)"
         },
         new()
         {
-            Id = "maxHealth",
-            Name = "Vitality",
-            Description = "+10 max health"
+            Id = "agility",
+            Name = "Swiftness",
+            Description = "+2 Agility (speed & evasion)"
         },
         new()
         {
-            Id = "attackSpeed",
-            Name = "Finesse",
-            Description = "10% faster attacks"
+            Id = "intelligence",
+            Name = "Wisdom",
+            Description = "+2 Intelligence (focus & sustain)"
         }
     };
     private readonly Timer _worldTimer;
@@ -49,6 +51,44 @@ public sealed class GameWorld : IDisposable
         _options = options ?? new GameWorldOptions();
         _environmentManager = new EnvironmentManager(_options);
         _mobManager = new MobManager(_options);
+
+        _classDefinitions = new[]
+        {
+            new PlayerClassDefinition
+            {
+                Id = "warrior",
+                Name = "Vanguard",
+                Description = "Strength-driven fighters who dominate the frontline.",
+                PrimaryAttribute = PlayerAttribute.Strength,
+                StartingStrength = 18,
+                StartingAgility = 9,
+                StartingIntelligence = 7,
+                StartingAbilityId = "crushingBlow"
+            },
+            new PlayerClassDefinition
+            {
+                Id = "ranger",
+                Name = "Storm Ranger",
+                Description = "Agile skirmishers that overwhelm foes with relentless volleys.",
+                PrimaryAttribute = PlayerAttribute.Agility,
+                StartingStrength = 12,
+                StartingAgility = 18,
+                StartingIntelligence = 8,
+                StartingAbilityId = "rapidVolley"
+            },
+            new PlayerClassDefinition
+            {
+                Id = "arcanist",
+                Name = "Arcanist",
+                Description = "Intelligence-focused casters who channel raw energy into devastating bursts.",
+                PrimaryAttribute = PlayerAttribute.Intelligence,
+                StartingStrength = 9,
+                StartingAgility = 11,
+                StartingIntelligence = 20,
+                StartingAbilityId = "arcaneBurst"
+            }
+        };
+
         _abilityDefinitions = new[]
         {
             new AbilityDefinition
@@ -58,6 +98,9 @@ public sealed class GameWorld : IDisposable
                 Key = "1",
                 CooldownSeconds = 1.6,
                 DamageMultiplier = 1.0,
+                FlatBonusDamage = 2,
+                ScalingCoefficient = 0.04,
+                ScalingStat = PlayerAttribute.Strength,
                 UnlockLevel = 1,
                 ResetOnLevelUp = false,
                 ScalesWithAttackSpeed = true,
@@ -78,21 +121,111 @@ public sealed class GameWorld : IDisposable
             },
             new AbilityDefinition
             {
+                Id = "crushingBlow",
+                Name = "Crushing Blow",
+                Key = "2",
+                CooldownSeconds = 8.0,
+                DamageMultiplier = 1.2,
+                FlatBonusDamage = 10,
+                ScalingCoefficient = 0.08,
+                ScalingStat = PlayerAttribute.Strength,
+                UnlockLevel = 1,
+                ResetOnLevelUp = false,
+                ScalesWithAttackSpeed = false,
+                RequiredClassId = "warrior",
+                AutoCast = false,
+                Priority = 0.85,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Melee,
+                    Range = 4.2,
+                    Radius = 2.2,
+                    Speed = 0,
+                    LifetimeSeconds = 0.7,
+                    WindupSeconds = 0.3,
+                    HitsMultipleTargets = false,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "rapidVolley",
+                Name = "Rapid Volley",
+                Key = "2",
+                CooldownSeconds = 7.0,
+                DamageMultiplier = 1.05,
+                FlatBonusDamage = 6,
+                ScalingCoefficient = 0.07,
+                ScalingStat = PlayerAttribute.Agility,
+                UnlockLevel = 1,
+                ResetOnLevelUp = false,
+                ScalesWithAttackSpeed = true,
+                RequiredClassId = "ranger",
+                AutoCast = false,
+                Priority = 0.9,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Projectile,
+                    Range = 22,
+                    Radius = 1.4,
+                    Speed = 22,
+                    LifetimeSeconds = 1.6,
+                    WindupSeconds = 0.18,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "arcaneBurst",
+                Name = "Arcane Burst",
+                Key = "2",
+                CooldownSeconds = 9.0,
+                DamageMultiplier = 1.1,
+                FlatBonusDamage = 14,
+                ScalingCoefficient = 0.09,
+                ScalingStat = PlayerAttribute.Intelligence,
+                UnlockLevel = 1,
+                ResetOnLevelUp = false,
+                ScalesWithAttackSpeed = false,
+                RequiredClassId = "arcanist",
+                AutoCast = false,
+                Priority = 0.95,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Projectile,
+                    Range = 24,
+                    Radius = 2.2,
+                    Speed = 18,
+                    LifetimeSeconds = 2.2,
+                    WindupSeconds = 0.22,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = false,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
                 Id = "sweepingStrike",
                 Name = "Sweeping Strike",
-                Key = "2",
+                Key = "3",
                 CooldownSeconds = 7.5,
                 DamageMultiplier = 1.4,
+                FlatBonusDamage = 6,
+                ScalingCoefficient = 0.05,
+                ScalingStat = PlayerAttribute.Strength,
                 UnlockLevel = 3,
                 ResetOnLevelUp = true,
                 ScalesWithAttackSpeed = false,
                 AutoCast = true,
-                Priority = 0.5,
+                Priority = 0.55,
                 Attack = new AttackDescriptor
                 {
                     Behavior = AttackBehavior.Sweep,
-                    Range = 4.8,
-                    Radius = 4.8,
+                    Range = 5.0,
+                    Radius = 5.0,
                     Speed = 0,
                     LifetimeSeconds = 0.9,
                     WindupSeconds = 0.35,
@@ -105,9 +238,12 @@ public sealed class GameWorld : IDisposable
             {
                 Id = "fireball",
                 Name = "Fireball",
-                Key = "3",
+                Key = "4",
                 CooldownSeconds = 9.0,
-                DamageMultiplier = 1.8,
+                DamageMultiplier = 1.5,
+                FlatBonusDamage = 12,
+                ScalingCoefficient = 0.07,
+                ScalingStat = PlayerAttribute.Intelligence,
                 UnlockLevel = 5,
                 ResetOnLevelUp = true,
                 ScalesWithAttackSpeed = false,
@@ -116,11 +252,11 @@ public sealed class GameWorld : IDisposable
                 Attack = new AttackDescriptor
                 {
                     Behavior = AttackBehavior.Projectile,
-                    Range = 18,
-                    Radius = 1.2,
-                    Speed = 16,
-                    LifetimeSeconds = 2.4,
-                    WindupSeconds = 0.18,
+                    Range = 22,
+                    Radius = 1.6,
+                    Speed = 20,
+                    LifetimeSeconds = 2.6,
+                    WindupSeconds = 0.2,
                     HitsMultipleTargets = false,
                     RequiresTarget = true,
                     CanHitEnvironment = true
@@ -128,12 +264,60 @@ public sealed class GameWorld : IDisposable
             }
         };
 
+        _mobArchetypes = new[]
+        {
+            new MobArchetype(
+                "brute",
+                "runicBrute",
+                PlayerAttribute.Strength,
+                new StatRange(14, 24),
+                new StatRange(6, 12),
+                new StatRange(4, 10),
+                baseHealth: 180,
+                baseDamage: 16,
+                baseInterval: 2.6,
+                moveSpeed: 3.0,
+                aggroRange: 11.5,
+                attackRange: 2.6,
+                new[] { "Runic Hunter", "Prism Mauler", "Stonecrusher" }),
+            new MobArchetype(
+                "skirmisher",
+                "stormSkirmisher",
+                PlayerAttribute.Agility,
+                new StatRange(10, 16),
+                new StatRange(16, 24),
+                new StatRange(6, 12),
+                baseHealth: 145,
+                baseDamage: 13,
+                baseInterval: 1.9,
+                moveSpeed: 3.8,
+                aggroRange: 12.5,
+                attackRange: 3.1,
+                new[] { "Storm Dancer", "Gale Stalker", "Windblade" }),
+            new MobArchetype(
+                "channeler",
+                "arcanumChanneler",
+                PlayerAttribute.Intelligence,
+                new StatRange(8, 14),
+                new StatRange(10, 16),
+                new StatRange(18, 26),
+                baseHealth: 150,
+                baseDamage: 15,
+                baseInterval: 2.2,
+                moveSpeed: 3.2,
+                aggroRange: 13.5,
+                attackRange: 3.4,
+                new[] { "Runic Channeler", "Prism Seer", "Aether Sentry" })
+        };
+
         _worldTimer = new Timer(WorldTick, null, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
     }
 
     public IReadOnlyDictionary<string, PlayerState> Players => _players;
 
-    public AbilityDefinition[] AbilityDefinitions => _abilityDefinitions;
+    public IReadOnlyList<AbilityDefinition> AbilityDefinitions => _abilityDefinitions;
+
+    public IReadOnlyList<PlayerClassDefinition> ClassDefinitions => _classDefinitions;
 
     public IReadOnlyList<PlayerStatUpgradeOption> StatUpgradeDefinitions => StatUpgradeOptions;
 
@@ -152,6 +336,10 @@ public sealed class GameWorld : IDisposable
             LastUpdate = DateTime.UtcNow
         };
 
+        playerState.ClassId = null;
+        playerState.Stats.RecalculateDerivedStats();
+        playerState.Stats.CurrentHealth = playerState.Stats.MaxHealth;
+
         _players[connectionId] = playerState;
         return playerState;
     }
@@ -168,6 +356,7 @@ public sealed class GameWorld : IDisposable
             {
                 PlayerId = state.Id,
                 DisplayName = state.DisplayName,
+                ClassId = state.ClassId,
                 X = state.X,
                 Y = state.Y,
                 Z = state.Z,
@@ -188,13 +377,35 @@ public sealed class GameWorld : IDisposable
                 Level = state.Stats.Level,
                 Experience = state.Stats.Experience,
                 ExperienceToNext = state.Stats.ExperienceToNext,
+                ClassId = state.ClassId,
+                Strength = state.Stats.Strength,
+                Agility = state.Stats.Agility,
+                Intelligence = state.Stats.Intelligence,
                 Attack = state.Stats.Attack,
                 MaxHealth = state.Stats.MaxHealth,
                 CurrentHealth = state.Stats.CurrentHealth,
                 AttackSpeed = state.Stats.AttackSpeed,
-                UnspentStatPoints = state.Stats.UnspentStatPoints
+                UnspentStatPoints = state.Stats.UnspentStatPoints,
+                CombatRating = state.Stats.GetCombatRating()
             };
         }
+    }
+
+    public List<PlayerClassSummaryDto> BuildClassSummaries()
+    {
+        return _classDefinitions
+            .Select(definition => new PlayerClassSummaryDto
+            {
+                Id = definition.Id,
+                Name = definition.Name,
+                Description = definition.Description,
+                PrimaryAttribute = definition.PrimaryAttribute.ToString().ToLowerInvariant(),
+                StartingStrength = definition.StartingStrength,
+                StartingAgility = definition.StartingAgility,
+                StartingIntelligence = definition.StartingIntelligence,
+                StartingAbilityId = definition.StartingAbilityId
+            })
+            .ToList();
     }
 
     public List<AbilityDto> BuildAbilitySnapshots(PlayerState state)
@@ -324,7 +535,7 @@ public sealed class GameWorld : IDisposable
             }
 
             var stats = player.Stats;
-            abilityState.Unlocked = stats.Level >= abilityDefinition.UnlockLevel;
+            abilityState.Unlocked = IsAbilityAvailableToPlayer(player, abilityDefinition);
 
             var descriptor = abilityDefinition.Attack;
             var originX = player.X;
@@ -342,7 +553,7 @@ public sealed class GameWorld : IDisposable
                 }
 
                 cooldown = Math.Max(0.2, cooldown);
-                var plannedDamage = Math.Max(1.0, stats.Attack * abilityDefinition.DamageMultiplier);
+                var plannedDamage = CalculateAbilityDamage(stats, abilityDefinition);
 
                 if (descriptor != null)
                 {
@@ -379,11 +590,16 @@ public sealed class GameWorld : IDisposable
                 Level = stats.Level,
                 Experience = stats.Experience,
                 ExperienceToNext = stats.ExperienceToNext,
+                ClassId = player.ClassId,
+                Strength = stats.Strength,
+                Agility = stats.Agility,
+                Intelligence = stats.Intelligence,
                 Attack = stats.Attack,
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                UnspentStatPoints = stats.UnspentStatPoints,
+                CombatRating = stats.GetCombatRating()
             };
 
             abilitySnapshots = BuildAbilitySnapshotsLocked(player, leveledUp: false, now);
@@ -476,11 +692,16 @@ public sealed class GameWorld : IDisposable
                 Level = stats.Level,
                 Experience = stats.Experience,
                 ExperienceToNext = stats.ExperienceToNext,
+                ClassId = state.ClassId,
+                Strength = stats.Strength,
+                Agility = stats.Agility,
+                Intelligence = stats.Intelligence,
                 Attack = stats.Attack,
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                UnspentStatPoints = stats.UnspentStatPoints,
+                CombatRating = stats.GetCombatRating()
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp, now);
@@ -501,6 +722,19 @@ public sealed class GameWorld : IDisposable
         }
 
         return new PlayerStatsUpdate(state, snapshot, xpAwarded, leveledUp, message, abilities, upgradeOptions);
+    }
+
+    private double CalculateAbilityDamage(PlayerStats stats, AbilityDefinition definition)
+    {
+        var baseDamage = Math.Max(1.0, stats.Attack * definition.DamageMultiplier + definition.FlatBonusDamage);
+        if (definition.ScalingStat.HasValue)
+        {
+            var attributeValue = stats.GetAttribute(definition.ScalingStat.Value);
+            var bonusMultiplier = 1.0 + Math.Max(0, attributeValue) * definition.ScalingCoefficient;
+            baseDamage *= bonusMultiplier;
+        }
+
+        return Math.Max(1.0, baseDamage);
     }
 
     private bool TryCreateAttackInstance(
@@ -926,6 +1160,16 @@ public sealed class GameWorld : IDisposable
         return ApplyStatUpgrade(state, statId, now);
     }
 
+    public PlayerStatsUpdate? SelectPlayerClass(string playerId, string classId, DateTime now)
+    {
+        if (!TryGetPlayer(playerId, out var state) || state is null)
+        {
+            return null;
+        }
+
+        return SelectPlayerClass(state, classId, now);
+    }
+
     public PlayerStatsUpdate? ApplyStatUpgrade(PlayerState state, string statId, DateTime now)
     {
         PlayerStatsDto snapshot;
@@ -951,11 +1195,16 @@ public sealed class GameWorld : IDisposable
                 Level = stats.Level,
                 Experience = stats.Experience,
                 ExperienceToNext = stats.ExperienceToNext,
+                ClassId = state.ClassId,
+                Strength = stats.Strength,
+                Agility = stats.Agility,
+                Intelligence = stats.Intelligence,
                 Attack = stats.Attack,
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                UnspentStatPoints = stats.UnspentStatPoints,
+                CombatRating = stats.GetCombatRating()
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
@@ -963,6 +1212,85 @@ public sealed class GameWorld : IDisposable
         }
 
         return new PlayerStatsUpdate(state, snapshot, 0, false, message, abilities, upgradeOptions);
+    }
+
+    public PlayerStatsUpdate? SelectPlayerClass(PlayerState state, string classId, DateTime now)
+    {
+        if (string.IsNullOrWhiteSpace(classId))
+        {
+            return null;
+        }
+
+        PlayerStatsDto snapshot;
+        List<AbilityDto> abilities;
+        List<PlayerStatUpgradeOption>? upgradeOptions;
+        string reason;
+
+        lock (state)
+        {
+            var classDefinition = _classDefinitions.FirstOrDefault(c =>
+                string.Equals(c.Id, classId, StringComparison.OrdinalIgnoreCase));
+
+            if (classDefinition == null)
+            {
+                return null;
+            }
+
+            if (!string.IsNullOrWhiteSpace(state.ClassId) &&
+                string.Equals(state.ClassId, classDefinition.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            state.ClassId = classDefinition.Id;
+            state.Stats.ApplyClass(classDefinition);
+            state.Stats.RecalculateDerivedStats();
+            state.Stats.CurrentHealth = state.Stats.MaxHealth;
+
+            foreach (var definition in _abilityDefinitions)
+            {
+                if (!state.Abilities.TryGetValue(definition.Id, out var abilityState))
+                {
+                    abilityState = new PlayerAbilityState
+                    {
+                        AbilityId = definition.Id,
+                        CooldownUntil = now,
+                        Unlocked = false
+                    };
+                    state.Abilities[definition.Id] = abilityState;
+                }
+
+                var unlocked = IsAbilityAvailableToPlayer(state, definition);
+                abilityState.Unlocked = unlocked;
+                if (unlocked)
+                {
+                    abilityState.CooldownUntil = now;
+                }
+            }
+
+            snapshot = new PlayerStatsDto
+            {
+                Level = state.Stats.Level,
+                Experience = state.Stats.Experience,
+                ExperienceToNext = state.Stats.ExperienceToNext,
+                ClassId = state.ClassId,
+                Strength = state.Stats.Strength,
+                Agility = state.Stats.Agility,
+                Intelligence = state.Stats.Intelligence,
+                Attack = state.Stats.Attack,
+                MaxHealth = state.Stats.MaxHealth,
+                CurrentHealth = state.Stats.CurrentHealth,
+                AttackSpeed = state.Stats.AttackSpeed,
+                UnspentStatPoints = state.Stats.UnspentStatPoints,
+                CombatRating = state.Stats.GetCombatRating()
+            };
+
+            abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
+            upgradeOptions = state.Stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            reason = $"You have embraced the path of the {classDefinition.Name}.";
+        }
+
+        return new PlayerStatsUpdate(state, snapshot, 0, false, reason, abilities, upgradeOptions);
     }
 
     private static bool TryApplyStatUpgradeLocked(PlayerStats stats, string statId, out string message)
@@ -976,24 +1304,24 @@ public sealed class GameWorld : IDisposable
 
         switch (statId.Trim().ToLowerInvariant())
         {
-            case "attack":
-                stats.Attack += 2;
-                message = "Attack increased!";
+            case "strength":
+                stats.Strength += 2;
+                message = "Strength increased!";
                 break;
-            case "maxhealth":
-            case "health":
-                stats.MaxHealth += 10;
-                stats.CurrentHealth = stats.MaxHealth;
-                message = "Max health increased!";
+            case "agility":
+                stats.Agility += 2;
+                message = "Agility increased!";
                 break;
-            case "attackspeed":
-            case "speed":
-                stats.AttackSpeed = Math.Round(Math.Max(0.1, stats.AttackSpeed + 0.1), 2, MidpointRounding.AwayFromZero);
-                message = "Attack speed improved!";
+            case "intelligence":
+                stats.Intelligence += 2;
+                message = "Intelligence increased!";
                 break;
             default:
                 return false;
         }
+
+        stats.RecalculateDerivedStats();
+        stats.CurrentHealth = stats.MaxHealth;
 
         if (stats.UnspentStatPoints > 0)
         {
@@ -1028,11 +1356,16 @@ public sealed class GameWorld : IDisposable
                 Level = state.Stats.Level,
                 Experience = state.Stats.Experience,
                 ExperienceToNext = state.Stats.ExperienceToNext,
+                ClassId = state.ClassId,
+                Strength = state.Stats.Strength,
+                Agility = state.Stats.Agility,
+                Intelligence = state.Stats.Intelligence,
                 Attack = state.Stats.Attack,
                 MaxHealth = state.Stats.MaxHealth,
                 CurrentHealth = state.Stats.CurrentHealth,
                 AttackSpeed = state.Stats.AttackSpeed,
-                UnspentStatPoints = state.Stats.UnspentStatPoints
+                UnspentStatPoints = state.Stats.UnspentStatPoints,
+                CombatRating = state.Stats.GetCombatRating()
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
@@ -1063,11 +1396,16 @@ public sealed class GameWorld : IDisposable
                 Level = stats.Level,
                 Experience = stats.Experience,
                 ExperienceToNext = stats.ExperienceToNext,
+                ClassId = state.ClassId,
+                Strength = stats.Strength,
+                Agility = stats.Agility,
+                Intelligence = stats.Intelligence,
                 Attack = stats.Attack,
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                UnspentStatPoints = stats.UnspentStatPoints,
+                CombatRating = stats.GetCombatRating()
             };
 
             reason = defeated ? null : $"{mobName} hit you for {appliedDamage}.";
@@ -1221,6 +1559,7 @@ public sealed class GameWorld : IDisposable
         var count = rng.Next(4, 9);
         var environmentBlueprints = new List<EnvironmentBlueprint>(count);
         var mobBlueprints = new List<MobBlueprint>();
+        var averages = GetAveragePlayerAttributes();
 
         for (var i = 0; i < count; i++)
         {
@@ -1251,16 +1590,20 @@ public sealed class GameWorld : IDisposable
             }
             else
             {
+                var archetype = ChooseMobArchetype(rng, averages);
+                var mobStats = BuildMobStatBlock(archetype, rng, averages);
                 var mobBlueprint = new MobBlueprint
                 {
                     Id = $"mob-{cx}-{cz}-{i}",
                     ChunkX = cx,
                     ChunkZ = cz,
-                    Type = "runicHunter",
-                    Name = rng.NextDouble() < 0.5 ? "Runic Hunter" : "Prism Stalker",
+                    Type = archetype.TypeId,
+                    ArchetypeId = archetype.Id,
+                    Name = archetype.GetName(rng),
                     X = worldX,
                     Y = worldY,
-                    Z = worldZ
+                    Z = worldZ,
+                    Stats = mobStats
                 };
 
                 mobBlueprints.Add(mobBlueprint);
@@ -1269,6 +1612,208 @@ public sealed class GameWorld : IDisposable
         }
 
         return (environmentBlueprints, mobBlueprints);
+    }
+
+    private AttributeAverages GetAveragePlayerAttributes()
+    {
+        double totalStrength = 0;
+        double totalAgility = 0;
+        double totalIntelligence = 0;
+        var count = 0;
+
+        foreach (var kvp in _players)
+        {
+            var state = kvp.Value;
+            lock (state)
+            {
+                if (string.IsNullOrWhiteSpace(state.ClassId))
+                {
+                    continue;
+                }
+
+                totalStrength += state.Stats.Strength;
+                totalAgility += state.Stats.Agility;
+                totalIntelligence += state.Stats.Intelligence;
+                count++;
+            }
+        }
+
+        if (count == 0)
+        {
+            return new AttributeAverages(18, 18, 18);
+        }
+
+        return new AttributeAverages(
+            totalStrength / count,
+            totalAgility / count,
+            totalIntelligence / count);
+    }
+
+    private MobArchetype ChooseMobArchetype(Random rng, AttributeAverages averages)
+    {
+        var weighted = new List<(MobArchetype Archetype, double Weight)>(_mobArchetypes.Length);
+
+        foreach (var archetype in _mobArchetypes)
+        {
+            var target = averages.Get(archetype.PrimaryAttribute);
+            var midpoint = archetype.GetRange(archetype.PrimaryAttribute).Midpoint;
+            var difference = Math.Abs(target - midpoint);
+            var weight = 1.0 / (1.0 + difference);
+            weighted.Add((archetype, Math.Max(0.1, weight)));
+        }
+
+        var total = weighted.Sum(w => w.Weight);
+        var roll = rng.NextDouble() * total;
+        var cumulative = 0.0;
+
+        foreach (var entry in weighted)
+        {
+            cumulative += entry.Weight;
+            if (roll <= cumulative)
+            {
+                return entry.Archetype;
+            }
+        }
+
+        return weighted[weighted.Count - 1].Archetype;
+    }
+
+    private MobStatBlock BuildMobStatBlock(MobArchetype archetype, Random rng, AttributeAverages averages)
+    {
+        var strength = SampleStat(archetype.GetRange(PlayerAttribute.Strength), averages.Strength, rng);
+        var agility = SampleStat(archetype.GetRange(PlayerAttribute.Agility), averages.Agility, rng);
+        var intelligence = SampleStat(archetype.GetRange(PlayerAttribute.Intelligence), averages.Intelligence, rng);
+
+        var maxHealth = Math.Max(archetype.BaseHealth, archetype.BaseHealth + strength * 9 + intelligence * 5);
+        var attackDamage = Math.Max(archetype.BaseDamage, archetype.BaseDamage + strength * 1.6 + intelligence * 0.9);
+        var attackInterval = Math.Clamp(archetype.BaseInterval - agility * 0.025, 1.2, 3.6);
+        var moveSpeed = Math.Max(2.0, archetype.MoveSpeed + agility * 0.02);
+        var aggroRange = Math.Max(8.0, archetype.AggroRange + intelligence * 0.05);
+        var attackRange = Math.Max(2.0, archetype.AttackRange + intelligence * 0.03);
+
+        return new MobStatBlock
+        {
+            Strength = strength,
+            Agility = agility,
+            Intelligence = intelligence,
+            MaxHealth = Math.Round(maxHealth, 2),
+            AttackDamage = Math.Round(attackDamage, 2),
+            AttackInterval = Math.Round(attackInterval, 2),
+            MoveSpeed = Math.Round(moveSpeed, 2),
+            AggroRange = Math.Round(aggroRange, 2),
+            AttackRange = Math.Round(attackRange, 2)
+        };
+    }
+
+    private static int SampleStat(StatRange range, double target, Random rng)
+    {
+        var midpoint = range.Midpoint;
+        var anchor = double.IsFinite(target) ? target : midpoint;
+        var variance = Math.Max(1.0, (range.Max - range.Min) / 3.0);
+        var sample = anchor + (rng.NextDouble() - 0.5) * variance * 2.0;
+        var value = (int)Math.Round(sample, MidpointRounding.AwayFromZero);
+        return (int)Math.Clamp(value, range.Min, range.Max);
+    }
+
+    private readonly struct AttributeAverages
+    {
+        public AttributeAverages(double strength, double agility, double intelligence)
+        {
+            Strength = strength;
+            Agility = agility;
+            Intelligence = intelligence;
+        }
+
+        public double Strength { get; }
+        public double Agility { get; }
+        public double Intelligence { get; }
+
+        public double Get(PlayerAttribute attribute) => attribute switch
+        {
+            PlayerAttribute.Strength => Strength,
+            PlayerAttribute.Agility => Agility,
+            PlayerAttribute.Intelligence => Intelligence,
+            _ => Strength
+        };
+    }
+
+    private readonly struct StatRange
+    {
+        public StatRange(int min, int max)
+        {
+            Min = min;
+            Max = max;
+        }
+
+        public int Min { get; }
+        public int Max { get; }
+        public double Midpoint => (Min + Max) / 2.0;
+    }
+
+    private sealed class MobArchetype
+    {
+        public MobArchetype(
+            string id,
+            string typeId,
+            PlayerAttribute primaryAttribute,
+            StatRange strengthRange,
+            StatRange agilityRange,
+            StatRange intelligenceRange,
+            double baseHealth,
+            double baseDamage,
+            double baseInterval,
+            double moveSpeed,
+            double aggroRange,
+            double attackRange,
+            IEnumerable<string> names)
+        {
+            Id = id;
+            TypeId = typeId;
+            PrimaryAttribute = primaryAttribute;
+            StrengthRange = strengthRange;
+            AgilityRange = agilityRange;
+            IntelligenceRange = intelligenceRange;
+            BaseHealth = baseHealth;
+            BaseDamage = baseDamage;
+            BaseInterval = baseInterval;
+            MoveSpeed = moveSpeed;
+            AggroRange = aggroRange;
+            AttackRange = attackRange;
+            Names = names?.ToArray() ?? Array.Empty<string>();
+        }
+
+        public string Id { get; }
+        public string TypeId { get; }
+        public PlayerAttribute PrimaryAttribute { get; }
+        public StatRange StrengthRange { get; }
+        public StatRange AgilityRange { get; }
+        public StatRange IntelligenceRange { get; }
+        public double BaseHealth { get; }
+        public double BaseDamage { get; }
+        public double BaseInterval { get; }
+        public double MoveSpeed { get; }
+        public double AggroRange { get; }
+        public double AttackRange { get; }
+        public IReadOnlyList<string> Names { get; }
+
+        public StatRange GetRange(PlayerAttribute attribute) => attribute switch
+        {
+            PlayerAttribute.Strength => StrengthRange,
+            PlayerAttribute.Agility => AgilityRange,
+            PlayerAttribute.Intelligence => IntelligenceRange,
+            _ => StrengthRange
+        };
+
+        public string GetName(Random rng)
+        {
+            if (Names.Count == 0)
+            {
+                return TypeId;
+            }
+
+            var index = rng.Next(Names.Count);
+            return Names[index];
+        }
     }
 
     private static int CalculateExperienceForNext(int level)
@@ -1287,7 +1832,7 @@ public sealed class GameWorld : IDisposable
                 abilityState = new PlayerAbilityState
                 {
                     AbilityId = definition.Id,
-                    Unlocked = definition.UnlockLevel <= 1,
+                    Unlocked = false,
                     CooldownUntil = now
                 };
                 state.Abilities[definition.Id] = abilityState;
@@ -1298,7 +1843,13 @@ public sealed class GameWorld : IDisposable
                 abilityState.CooldownUntil = now;
             }
 
-            abilityState.Unlocked = state.Stats.Level >= definition.UnlockLevel;
+            var unlocked = IsAbilityAvailableToPlayer(state, definition);
+            if (unlocked && !abilityState.Unlocked)
+            {
+                abilityState.CooldownUntil = now;
+            }
+
+            abilityState.Unlocked = unlocked;
 
             var cooldownRemaining = Math.Max(0, (abilityState.CooldownUntil - now).TotalSeconds);
 
@@ -1313,11 +1864,26 @@ public sealed class GameWorld : IDisposable
                 ResetOnLevelUp = definition.ResetOnLevelUp,
                 Range = definition.Attack?.Range ?? 6,
                 AutoCast = definition.AutoCast,
-                Priority = definition.Priority
+                Priority = definition.Priority,
+                RequiredClassId = definition.RequiredClassId,
+                ScalingStat = definition.ScalingStat?.ToString().ToLowerInvariant()
             });
         }
 
         return list;
+    }
+
+    private static bool IsAbilityAvailableToPlayer(PlayerState state, AbilityDefinition definition)
+    {
+        if (!string.IsNullOrWhiteSpace(definition.RequiredClassId))
+        {
+            if (!string.Equals(state.ClassId, definition.RequiredClassId, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return state.Stats.Level >= definition.UnlockLevel;
     }
 
     private double SampleTerrainHeight(double x, double z)
