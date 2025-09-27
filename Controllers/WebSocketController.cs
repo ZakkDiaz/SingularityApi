@@ -121,6 +121,10 @@ public static class WebSocketController
                 await HandleStatUpgradeAsync(connectionId, root);
                 break;
 
+            case "chooseClass":
+                await HandleChooseClassAsync(connectionId, root);
+                break;
+
             default:
                 Console.WriteLine($"Unknown message type '{msgType}' from {connectionId}");
                 break;
@@ -257,6 +261,30 @@ public static class WebSocketController
         }
     }
 
+    private static async Task HandleChooseClassAsync(string playerId, JsonElement root)
+    {
+        if (!root.TryGetProperty("classId", out var classProp) || classProp.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        var classId = classProp.GetString();
+        if (string.IsNullOrWhiteSpace(classId))
+        {
+            return;
+        }
+
+        var update = World.SelectPlayerClass(playerId, classId, DateTime.UtcNow);
+        if (update == null)
+        {
+            return;
+        }
+
+        await SendPlayerStatsAsync(update);
+        await BroadcastPlayerStateAsync(World.CreatePlayerSnapshot(update.Player));
+        await BroadcastJsonAsync(new { type = "playerClassChanged", playerId, classId = update.Snapshot.ClassId });
+    }
+
     private static async Task ExecuteAbilityAsync(string playerId, string abilityId, string? targetId)
     {
         var now = DateTime.UtcNow;
@@ -305,6 +333,8 @@ public static class WebSocketController
             }
         }
 
+        var classSummaries = World.BuildClassSummaries();
+
         var payload = new
         {
             type = "initialState",
@@ -314,7 +344,8 @@ public static class WebSocketController
             players = otherPlayers,
             stats = statsSnapshot,
             abilities = abilitySnapshots,
-            upgradeOptions
+            upgradeOptions,
+            classes = classSummaries
         };
 
         await SendJsonAsync(socket, payload, cancel);

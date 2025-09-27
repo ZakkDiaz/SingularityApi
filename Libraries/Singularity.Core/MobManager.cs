@@ -198,7 +198,8 @@ public sealed class MobManager
 
                     if (state.TargetPlayerId == null)
                     {
-                        var bestDistanceSq = _options.MobAggroRange * _options.MobAggroRange;
+                        var aggroRange = state.AggroRange > 0 ? state.AggroRange : _options.MobAggroRange;
+                        var bestDistanceSq = aggroRange * aggroRange;
                         foreach (var observation in players.Values)
                         {
                             if (observation.CurrentHealth <= 0)
@@ -229,10 +230,11 @@ public sealed class MobManager
                         var dx = target.X - state.X;
                         var dz = target.Z - state.Z;
                         var distance = Math.Sqrt(dx * dx + dz * dz);
+                        var moveSpeed = state.MoveSpeed > 0 ? state.MoveSpeed : _options.MobMoveSpeed;
 
                         if (distance > 0.01)
                         {
-                            var step = Math.Min(distance, _options.MobMoveSpeed * deltaSeconds);
+                            var step = Math.Min(distance, moveSpeed * deltaSeconds);
                             state.X += dx / distance * step;
                             state.Z += dz / distance * step;
                             state.Heading = Math.Atan2(dx, dz);
@@ -240,21 +242,29 @@ public sealed class MobManager
                             changed = true;
                         }
 
-                        if (distance > _options.MobAggroRange * 1.35)
+                        var aggroRange = state.AggroRange > 0 ? state.AggroRange : _options.MobAggroRange;
+                        if (distance > aggroRange * 1.35)
                         {
                             state.TargetPlayerId = null;
                         }
-                        else if (distance <= _options.MobAttackRange + 0.1 && state.AttackCooldown <= 0)
+                        else
                         {
-                            state.AttackCooldown = _options.MobAttackCooldown;
-                            result.Attacks.Add(new MobAttackEvent
+                            var attackRange = state.AttackRange > 0 ? state.AttackRange : _options.MobAttackRange;
+                            var attackInterval = state.AttackInterval > 0 ? state.AttackInterval : _options.MobAttackCooldown;
+                            var attackDamage = state.AttackDamage > 0 ? state.AttackDamage : _options.MobAttackDamage;
+
+                            if (distance <= attackRange + 0.1 && state.AttackCooldown <= 0)
                             {
-                                MobId = mobId,
-                                PlayerId = target.PlayerId,
-                                Damage = _options.MobAttackDamage,
-                                MobName = mobBlueprint?.Name ?? "Enemy"
-                            });
-                            changed = true;
+                                state.AttackCooldown = attackInterval;
+                                result.Attacks.Add(new MobAttackEvent
+                                {
+                                    MobId = mobId,
+                                    PlayerId = target.PlayerId,
+                                    Damage = attackDamage,
+                                    MobName = mobBlueprint?.Name ?? "Enemy"
+                                });
+                                changed = true;
+                            }
                         }
                     }
                     else
@@ -262,9 +272,10 @@ public sealed class MobManager
                         var dx = state.SpawnX - state.X;
                         var dz = state.SpawnZ - state.Z;
                         var distance = Math.Sqrt(dx * dx + dz * dz);
+                        var moveSpeed = state.MoveSpeed > 0 ? state.MoveSpeed : _options.MobMoveSpeed;
                         if (distance > 0.05)
                         {
-                            var step = Math.Min(distance, _options.MobMoveSpeed * 0.6 * deltaSeconds);
+                            var step = Math.Min(distance, moveSpeed * 0.6 * deltaSeconds);
                             state.X += dx / distance * step;
                             state.Z += dz / distance * step;
                             state.Heading = Math.Atan2(dx, dz);
@@ -344,6 +355,11 @@ public sealed class MobManager
         public double Health { get; set; }
         public double MaxHealth { get; set; }
         public double AttackCooldown { get; set; }
+        public double AttackDamage { get; set; }
+        public double AttackInterval { get; set; }
+        public double MoveSpeed { get; set; }
+        public double AggroRange { get; set; }
+        public double AttackRange { get; set; }
         public string? TargetPlayerId { get; set; }
         public DateTime? RespawnAt { get; set; }
 
@@ -357,8 +373,13 @@ public sealed class MobManager
             Z = blueprint.Z;
             Heading = 0;
             HeightOffset = 1.0;
-            MaxHealth = options.MobBaseHealth;
+            MaxHealth = blueprint.Stats.MaxHealth > 0 ? blueprint.Stats.MaxHealth : options.MobBaseHealth;
             Health = MaxHealth;
+            AttackDamage = blueprint.Stats.AttackDamage > 0 ? blueprint.Stats.AttackDamage : options.MobAttackDamage;
+            AttackInterval = blueprint.Stats.AttackInterval > 0 ? blueprint.Stats.AttackInterval : options.MobAttackCooldown;
+            MoveSpeed = blueprint.Stats.MoveSpeed > 0 ? blueprint.Stats.MoveSpeed : options.MobMoveSpeed;
+            AggroRange = blueprint.Stats.AggroRange > 0 ? blueprint.Stats.AggroRange : options.MobAggroRange;
+            AttackRange = blueprint.Stats.AttackRange > 0 ? blueprint.Stats.AttackRange : options.MobAttackRange;
             AttackCooldown = 0;
             TargetPlayerId = null;
             RespawnAt = null;
