@@ -7,10 +7,18 @@
     <ItemGroup>
       <Content Remove="wwwroot\app.js" />
     </ItemGroup>
+  <ItemGroup>
+    <_ContentIncludedByDefault Remove="wwwroot\app.js" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="Libraries\**\*.cs" />
+    <EmbeddedResource Remove="Libraries\**\*" />
+    <None Remove="Libraries\**\*" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="wwwroot\app.js" />
+  </ItemGroup>
     <ItemGroup>
-      <_ContentIncludedByDefault Remove="wwwroot\app.js" />
-    </ItemGroup>
-    <ItemGroup>
-      <None Include="wwwroot\app.js" />
+      <ProjectReference Include="Libraries\Singularity.Core\Singularity.Core.csproj" />
     </ItemGroup>
 </Project>
