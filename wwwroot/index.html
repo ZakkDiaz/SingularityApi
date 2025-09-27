@@ -165,14 +165,23 @@
         }
 
         .ability-key {
-            font-size: 13px;
-            opacity: 0.7;
+            font-size: 11px;
+            opacity: 0.65;
+            letter-spacing: 0.28em;
         }
 
         .ability-cooldown {
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 600;
-            letter-spacing: 0.06em;
+            letter-spacing: 0.12em;
+        }
+
+        .ability-slot[data-autocast="true"] .ability-key {
+            color: #94ffd6;
+        }
+
+        .ability-slot[data-available="true"] .ability-cooldown {
+            color: #b4ffe3;
         }
 
         #controlsHint {
@@ -185,6 +194,48 @@
             font-size: 12px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
+        }
+
+        #debugPanel {
+            position: absolute;
+            right: 28px;
+            bottom: 28px;
+            min-width: 220px;
+            padding: 14px 18px;
+            border-radius: 16px;
+            background: rgba(12, 18, 28, 0.82);
+            box-shadow: 0 12px 38px rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(10px);
+            font-size: 11px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            opacity: 0;
+            transform: translateY(12px);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+            pointer-events: none;
+        }
+
+        #debugPanel[data-active="true"] {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        #debugPanel .debug-header {
+            font-weight: 600;
+            opacity: 0.75;
+            margin-bottom: 8px;
+            letter-spacing: 0.22em;
+        }
+
+        #debugPanel .debug-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        #debugPanel .debug-row span:last-child {
+            font-weight: 600;
+            opacity: 0.85;
         }
 
         #levelToast {
@@ -223,9 +274,18 @@
             </div>
             <div id="timeOfDay">--:-- · Night</div>
         </div>
-        <div id="controlsHint">WASD move · Skills auto-attack nearby enemies · Gain XP to level up</div>
+        <div id="controlsHint">WASD move · All skills auto-trigger nearby enemies · Press F3 for debug overlay</div>
         <div id="abilityBar"></div>
         <div id="log"></div>
+        <div id="debugPanel" data-active="false">
+            <div class="debug-header">Debug (F3)</div>
+            <div class="debug-row"><span>Ability</span><span id="debugAbility">—</span></div>
+            <div class="debug-row"><span>Range</span><span id="debugRange">—</span></div>
+            <div class="debug-row"><span>Nearest</span><span id="debugNearest">None</span></div>
+            <div class="debug-row"><span>Nearest Dist</span><span id="debugDistance">—</span></div>
+            <div class="debug-row"><span>Target</span><span id="debugTarget">None</span></div>
+            <div class="debug-row"><span>Target Dist</span><span id="debugTargetDistance">—</span></div>
+        </div>
     </div>
     <div id="levelToast">Level Up!</div>
 

@@ -4,10 +4,11 @@ export const ABILITY_DEFAULTS = {
     autoAttack: {
         name: 'Auto Attack',
         key: '1',
-        range: 7,
+        range: 12,
         cooldown: 1.6,
         unlocked: true,
-        resetOnLevelUp: false
+        resetOnLevelUp: false,
+        autoCast: true
     },
     instantStrike: {
         name: 'Skyburst Strike',
@@ -15,7 +16,8 @@ export const ABILITY_DEFAULTS = {
         range: 9,
         cooldown: 10,
         unlocked: false,
-        resetOnLevelUp: true
+        resetOnLevelUp: true,
+        autoCast: true
     }
 };
 
@@ -27,7 +29,8 @@ export function createBaselineAbilitySnapshots() {
         cooldownSeconds: 0,
         unlocked: Boolean(def.unlocked),
         available: Boolean(def.unlocked),
-        resetOnLevelUp: Boolean(def.resetOnLevelUp)
+        resetOnLevelUp: Boolean(def.resetOnLevelUp),
+        autoCast: def.autoCast !== false
     }));
 }
 

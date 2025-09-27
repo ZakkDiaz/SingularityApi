@@ -21,6 +21,8 @@ export class World {
         this.highlightedMobId = null;
         this.mobFlashTimers = new Map();
         this.timeOfDay = 0;
+        this.debugMode = false;
+        this.debugInfo = null;
 
         window.addEventListener('resize', () => this.handleResize());
         this.handleResize();
@@ -117,6 +119,10 @@ export class World {
         this.highlightedMobId = mobId || null;
     }
 
+    setDebugMode(enabled) {
+        this.debugMode = Boolean(enabled);
+    }
+
     updateWorldTime(timeOfDayFraction) {
         this.timeOfDay = timeOfDayFraction;
     }
@@ -139,7 +145,11 @@ export class World {
         return best;
     }
 
-    render() {
+    render(debugInfo = undefined) {
+        if (debugInfo !== undefined) {
+            this.debugInfo = debugInfo;
+        }
+
         if (!this.ctx || !this.canvas) {
             return;
         }
@@ -153,6 +163,10 @@ export class World {
         this.drawGrid();
         this.drawMobs();
         this.drawPlayers();
+
+        if (this.debugMode) {
+            this.drawDebugOverlay();
+        }
     }
 
     drawGrid() {
@@ -239,6 +253,67 @@ export class World {
 
             this.drawLabel(mob.name, x, y - 20, 'rgba(255, 230, 230, 0.75)');
         }
+    }
+
+    drawDebugOverlay() {
+        if (!this.debugInfo) {
+            return;
+        }
+
+        const info = this.debugInfo;
+        const ctx = this.ctx;
+        const localScreen = this.worldToScreen(this.localPlayer.x, this.localPlayer.z);
+
+        if (typeof info.abilityRange === 'number' && info.abilityRange > 0) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(126, 255, 209, 0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.arc(localScreen.x, localScreen.y, info.abilityRange * this.scale, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        const targetId = info.targetId ?? info.nearestMobId;
+        if (!targetId || !this.mobs.has(targetId)) {
+            return;
+        }
+
+        const mob = this.mobs.get(targetId);
+        const targetScreen = this.worldToScreen(mob.x, mob.z);
+        const dx = targetScreen.x - localScreen.x;
+        const dy = targetScreen.y - localScreen.y;
+        const fallbackDistance = Math.hypot(dx, dy) / this.scale;
+        const distance = typeof info.targetDistance === 'number'
+            ? info.targetDistance
+            : (typeof info.nearestDistance === 'number' ? info.nearestDistance : fallbackDistance);
+        const inRange = typeof distance === 'number' && typeof info.abilityRange === 'number'
+            ? distance <= info.abilityRange + 1e-3
+            : false;
+
+        ctx.save();
+        ctx.strokeStyle = inRange ? 'rgba(148, 255, 197, 0.9)' : 'rgba(255, 128, 128, 0.9)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(localScreen.x, localScreen.y);
+        ctx.lineTo(targetScreen.x, targetScreen.y);
+        ctx.stroke();
+        ctx.restore();
+
+        if (typeof distance === 'number' && Number.isFinite(distance)) {
+            const midX = localScreen.x + dx * 0.5;
+            const midY = localScreen.y + dy * 0.5;
+            this.drawLabel(`${distance.toFixed(2)}m`, midX, midY - 12, 'rgba(255, 255, 255, 0.95)');
+        }
+
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 232, 140, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(targetScreen.x, targetScreen.y, 22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
     }
 
     drawCircle(x, y, radius, color) {

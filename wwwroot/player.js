@@ -29,8 +29,9 @@ export class Player {
         this.lastSentSnapshot = { x: 0, y: 1.6, z: 0, heading: 0 };
 
         this.abilities = new Map();
-        this.autoAbilityId = 'autoAttack';
         this.abilityRanges = new Map();
+        this.primaryAbilityId = null;
+        this.debugInfo = this.createDebugInfo();
 
         this.initInputListeners();
     }
@@ -80,33 +81,82 @@ export class Player {
         this.position.z += this.velocity.z * delta;
 
         this.world.updateLocalPlayer(this.position.x, this.position.z, this.heading);
-        this.tryAutoAbility(now);
+        this.updateAbilityCooldowns(now);
+        this.tryAutoAbilities(now);
     }
 
-    tryAutoAbility(now) {
-        const ability = this.abilities.get(this.autoAbilityId);
-        if (!ability || !ability.unlocked || ability.pending || !ability.available) {
-            return;
+    tryAutoAbilities(now) {
+        const nearest = this.world.findNearestMob(this.position, Infinity);
+        const debugBase = {
+            nearestMobId: nearest?.id ?? null,
+            nearestDistance: nearest?.distance ?? null
+        };
+
+        let debugInfo = this.createDebugInfo(debugBase);
+        const networkReady = this.network && typeof this.network.isOpen === 'function' && this.network.isOpen();
+
+        for (const ability of this.abilities.values()) {
+            const defaults = getAbilityDefaults(ability.id) ?? {};
+            const autoCast = ability.autoCast ?? defaults.autoCast ?? true;
+            const range = this.abilityRanges.get(ability.id) ?? defaults.range ?? 6;
+
+            if (!this.primaryAbilityId && autoCast) {
+                this.primaryAbilityId = ability.id;
+            }
+
+            if (autoCast && !debugInfo.abilityId) {
+                debugInfo.abilityId = ability.id;
+                debugInfo.abilityName = ability.name ?? defaults.name ?? ability.id;
+                debugInfo.abilityRange = range;
+            }
+
+            const targetInRange = nearest && nearest.distance <= range ? nearest : null;
+            if (autoCast && targetInRange && !debugInfo.targetId) {
+                debugInfo.targetId = targetInRange.id;
+                debugInfo.targetDistance = targetInRange.distance;
+            }
+
+            if (!autoCast || !ability.unlocked) {
+                continue;
+            }
+
+            if (!ability.available || ability.pending || !networkReady) {
+                continue;
+            }
+
+            if (!targetInRange) {
+                continue;
+            }
+
+            const fallbackCooldown = defaults.cooldown ?? 1.5;
+            this.network.sendAbilityUse(ability.id, targetInRange.id);
+
+            ability.pending = true;
+            ability.available = false;
+            ability.cooldownExpiresAt = now + fallbackCooldown * 1000;
+
+            debugInfo = this.createDebugInfo({
+                nearestMobId: nearest?.id ?? null,
+                nearestDistance: nearest?.distance ?? null,
+                abilityId: ability.id,
+                abilityName: ability.name ?? defaults.name ?? ability.id,
+                abilityRange: range,
+                targetId: targetInRange.id,
+                targetDistance: targetInRange.distance
+            });
+
+            this.world.setHighlightedMob(targetInRange.id);
+            break;
         }
 
-        if (!this.network || typeof this.network.isOpen !== 'function' || !this.network.isOpen()) {
-            return;
+        if (!debugInfo.abilityId && this.primaryAbilityId) {
+            const defaults = getAbilityDefaults(this.primaryAbilityId) ?? {};
+            debugInfo.abilityId = this.primaryAbilityId;
+            debugInfo.abilityName = defaults.name ?? this.primaryAbilityId;
+            debugInfo.abilityRange = this.abilityRanges.get(this.primaryAbilityId) ?? defaults.range ?? null;
         }
 
-        const range = this.abilityRanges.get(this.autoAbilityId) ?? 6;
-        const target = this.world.findNearestMob(this.position, range);
-        if (!target) {
-            return;
-        }
-
-        const defaults = getAbilityDefaults(ability.id) ?? {};
-        const fallbackCooldown = defaults.cooldown ?? 1.5;
-
-        this.network.sendAbilityUse(ability.id, target.id);
-        ability.pending = true;
-        ability.available = false;
-        ability.cooldownExpiresAt = now + fallbackCooldown * 1000;
-        this.world.setHighlightedMob(target.id);
+        this.debugInfo = debugInfo;
     }
 
     sendMovementToServerIfNeeded() {
@@ -156,14 +206,17 @@ export class Player {
 
     setAbilitySnapshots(snapshots = []) {
         const now = performance.now();
+        this.primaryAbilityId = null;
         snapshots.forEach(snapshot => {
             const id = snapshot.abilityId ?? snapshot.id;
             if (!id) {
                 return;
             }
             const defaults = getAbilityDefaults(id) ?? {};
-            this.autoAbilityId = this.autoAbilityId || id;
-            this.abilityRanges.set(id, defaults.range ?? this.abilityRanges.get(id) ?? 6);
+            const range = defaults.range ?? this.abilityRanges.get(id) ?? 6;
+            this.abilityRanges.set(id, range);
+
+            const autoCast = snapshot.autoCast ?? defaults.autoCast ?? true;
             const abilityState = {
                 id,
                 name: snapshot.name ?? defaults.name ?? id,
@@ -171,33 +224,65 @@ export class Player {
                 unlocked: snapshot.unlocked ?? Boolean(defaults.unlocked),
                 available: snapshot.available ?? false,
                 pending: false,
-                cooldownExpiresAt: now + Math.max(0, snapshot.cooldownSeconds ?? 0) * 1000
+                cooldownExpiresAt: now + Math.max(0, snapshot.cooldownSeconds ?? 0) * 1000,
+                autoCast
             };
+
             if (abilityState.available) {
                 abilityState.cooldownExpiresAt = now;
             }
-            this.abilities.set(id, abilityState);
-        });
 
-        const primary = [...this.abilities.values()].find(a => (a.key ?? '') === '1' || a.id === 'autoAttack');
-        if (primary) {
-            this.autoAbilityId = primary.id;
-        }
+            this.abilities.set(id, abilityState);
+
+            if (!this.primaryAbilityId && autoCast) {
+                this.primaryAbilityId = id;
+            }
+        });
     }
 
     getAbilityStates() {
         const now = performance.now();
+        this.updateAbilityCooldowns(now);
         return Array.from(this.abilities.values()).map(state => {
             const remaining = Math.max(0, (state.cooldownExpiresAt - now) / 1000);
             return {
                 ...state,
                 cooldownRemaining: remaining,
-                ready: state.unlocked && !state.pending && (state.available || remaining <= 0.05)
+                ready: state.unlocked && state.available && !state.pending
             };
         });
     }
 
     getPosition() {
         return { x: this.position.x, z: this.position.z };
+    }
+
+    updateAbilityCooldowns(now) {
+        for (const ability of this.abilities.values()) {
+            if (!ability.unlocked) {
+                continue;
+            }
+            if (ability.cooldownExpiresAt && ability.cooldownExpiresAt <= now) {
+                ability.pending = false;
+                ability.available = true;
+            }
+        }
+    }
+
+    createDebugInfo(overrides = {}) {
+        return {
+            abilityId: null,
+            abilityName: '',
+            abilityRange: null,
+            targetId: null,
+            targetDistance: null,
+            nearestMobId: null,
+            nearestDistance: null,
+            ...overrides
+        };
+    }
+
+    getDebugSnapshot() {
+        return { ...this.debugInfo };
     }
 }

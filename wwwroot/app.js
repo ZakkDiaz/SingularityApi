@@ -12,6 +12,8 @@ let hudElements;
 let abilityUi;
 let levelToast;
 let levelToastTimer = null;
+let debugElements;
+let debugEnabled = false;
 
 const baselineStats = {
     level: 1,
@@ -37,6 +39,15 @@ function init() {
     abilityUi = {
         container: document.getElementById('abilityBar'),
         slots: new Map()
+    };
+    debugElements = {
+        panel: document.getElementById('debugPanel'),
+        ability: document.getElementById('debugAbility'),
+        range: document.getElementById('debugRange'),
+        nearest: document.getElementById('debugNearest'),
+        nearestDistance: document.getElementById('debugDistance'),
+        target: document.getElementById('debugTarget'),
+        targetDistance: document.getElementById('debugTargetDistance')
     };
 
     network = new Network({
@@ -129,20 +140,29 @@ function init() {
     const url = resolveWebSocketUrl();
     network.connect(url);
 
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    world.setDebugMode(debugEnabled);
+
     requestAnimationFrame(animate);
 }
 
 function animate() {
     requestAnimationFrame(animate);
+    let debugSnapshot = null;
+
     if (player) {
         player.update();
         player.sendMovementToServerIfNeeded();
+        debugSnapshot = player.getDebugSnapshot();
     }
     if (world) {
-        world.render();
+        world.render(debugSnapshot);
     }
     if (player && abilityUi) {
         refreshAbilityCooldowns(player.getAbilityStates());
+    }
+    if (debugEnabled) {
+        updateDebugPanel(debugSnapshot);
     }
 }
 
@@ -196,12 +216,13 @@ function applyAbilities(abilities) {
             abilityUi.slots.set(id, slot);
             container.appendChild(slot.root);
         }
-        slot.key.textContent = ability.key ?? '';
         slot.name.textContent = ability.name ?? id;
         slot.root.dataset.locked = ability.unlocked ? 'false' : 'true';
         slot.root.dataset.available = ability.available ? 'true' : 'false';
-        slot.cooldownSeconds = ability.cooldownSeconds ?? 0;
+        slot.root.dataset.autocast = (ability.autoCast ?? true) ? 'true' : 'false';
     });
+
+    refreshAbilityCooldowns(player.getAbilityStates());
 }
 
 function createAbilitySlot() {
@@ -223,20 +244,57 @@ function refreshAbilityCooldowns(abilityStates) {
     if (!Array.isArray(abilityStates)) {
         return;
     }
-    const now = performance.now();
     abilityStates.forEach(state => {
         const slot = abilityUi.slots.get(state.id);
         if (!slot) return;
+        slot.name.textContent = state.name ?? state.id;
+        slot.key.textContent = state.autoCast ? 'AUTO' : '';
         if (state.ready) {
             slot.root.dataset.available = 'true';
-            slot.cooldown.textContent = '';
+            slot.cooldown.textContent = 'Ready';
         } else {
             slot.root.dataset.available = 'false';
             const remaining = Math.max(0, state.cooldownRemaining);
             slot.cooldown.textContent = remaining >= 1 ? `${Math.ceil(remaining)}s` : `${remaining.toFixed(1)}s`;
         }
         slot.root.dataset.locked = state.unlocked ? 'false' : 'true';
+        slot.root.dataset.autocast = state.autoCast ? 'true' : 'false';
     });
+}
+
+function handleGlobalKeyDown(evt) {
+    if (evt.code === 'F3') {
+        debugEnabled = !debugEnabled;
+        world.setDebugMode(debugEnabled);
+        if (!debugEnabled) {
+            updateDebugPanel(null);
+        } else {
+            updateDebugPanel(player?.getDebugSnapshot() ?? null);
+        }
+        log(`Debug mode ${debugEnabled ? 'enabled' : 'disabled'}.`);
+    }
+}
+
+function updateDebugPanel(info) {
+    if (!debugElements?.panel) {
+        return;
+    }
+
+    debugElements.panel.dataset.active = debugEnabled ? 'true' : 'false';
+
+    const abilityText = info?.abilityName || info?.abilityId || '—';
+    const rangeText = typeof info?.abilityRange === 'number' ? `${info.abilityRange.toFixed(1)}m` : '—';
+    const nearestId = info?.nearestMobId || 'None';
+    const nearestDistance = typeof info?.nearestDistance === 'number' ? `${info.nearestDistance.toFixed(2)}m` : '—';
+    const targetId = info?.targetId || 'None';
+    const targetDistance = typeof info?.targetDistance === 'number' ? `${info.targetDistance.toFixed(2)}m` : '—';
+
+    if (debugElements.ability) debugElements.ability.textContent = abilityText;
+    if (debugElements.range) debugElements.range.textContent = rangeText;
+    if (debugElements.nearest) debugElements.nearest.textContent = nearestId;
+    if (debugElements.nearestDistance) debugElements.nearestDistance.textContent = nearestDistance;
+    if (debugElements.target) debugElements.target.textContent = targetId;
+    if (debugElements.targetDistance) debugElements.targetDistance.textContent = targetDistance;
 }
 
 function showLevelToast(text) {
