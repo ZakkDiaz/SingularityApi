@@ -13,7 +13,9 @@ public sealed class GameWorld : IDisposable
     private readonly ConcurrentDictionary<string, PlayerState> _players = new();
     private readonly EnvironmentManager _environmentManager;
     private readonly MobManager _mobManager;
+    private const int MaxWeaponSlots = 3;
     private readonly AbilityDefinition[] _abilityDefinitions;
+    private readonly Dictionary<string, AbilityDefinition> _abilityDefinitionMap;
     private readonly object _attackLock = new();
     private readonly Dictionary<string, AttackInstance> _activeAttacks = new();
     private static readonly PlayerStatUpgradeOption[] StatUpgradeOptions =
@@ -49,14 +51,15 @@ public sealed class GameWorld : IDisposable
         _options = options ?? new GameWorldOptions();
         _environmentManager = new EnvironmentManager(_options);
         _mobManager = new MobManager(_options);
-        _abilityDefinitions = new[]
+        var abilityDefinitions = new[]
         {
             new AbilityDefinition
             {
-                Id = "autoAttack",
-                Name = "Auto Attack",
-                Key = "1",
-                CooldownSeconds = 1.6,
+                Id = "swordSweep",
+                Name = "Sword Sweep",
+                Key = "Weapon",
+                Description = "Wide melee arc that cleaves enemies around you.",
+                CooldownSeconds = 1.5,
                 DamageMultiplier = 1.0,
                 UnlockLevel = 1,
                 ResetOnLevelUp = false,
@@ -65,37 +68,12 @@ public sealed class GameWorld : IDisposable
                 Priority = 1.0,
                 Attack = new AttackDescriptor
                 {
-                    Behavior = AttackBehavior.Melee,
-                    Range = 3.6,
-                    Radius = 2.4,
-                    Speed = 0,
-                    LifetimeSeconds = 0.55,
-                    WindupSeconds = 0.15,
-                    HitsMultipleTargets = false,
-                    RequiresTarget = true,
-                    CanHitEnvironment = true
-                }
-            },
-            new AbilityDefinition
-            {
-                Id = "sweepingStrike",
-                Name = "Sweeping Strike",
-                Key = "2",
-                CooldownSeconds = 7.5,
-                DamageMultiplier = 1.4,
-                UnlockLevel = 3,
-                ResetOnLevelUp = true,
-                ScalesWithAttackSpeed = false,
-                AutoCast = true,
-                Priority = 0.5,
-                Attack = new AttackDescriptor
-                {
                     Behavior = AttackBehavior.Sweep,
-                    Range = 4.8,
-                    Radius = 4.8,
+                    Range = 4.2,
+                    Radius = 4.0,
                     Speed = 0,
-                    LifetimeSeconds = 0.9,
-                    WindupSeconds = 0.35,
+                    LifetimeSeconds = 0.6,
+                    WindupSeconds = 0.15,
                     HitsMultipleTargets = true,
                     RequiresTarget = false,
                     CanHitEnvironment = true
@@ -103,30 +81,247 @@ public sealed class GameWorld : IDisposable
             },
             new AbilityDefinition
             {
+                Id = "arrowStrike",
+                Name = "Arrow Strike",
+                Key = "Weapon",
+                Description = "Rapid piercing arrow that travels in a straight line.",
+                CooldownSeconds = 1.8,
+                DamageMultiplier = 0.95,
+                UnlockLevel = 1,
+                ResetOnLevelUp = false,
+                ScalesWithAttackSpeed = true,
+                AutoCast = true,
+                Priority = 0.9,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Projectile,
+                    Range = 22,
+                    Radius = 1.2,
+                    Speed = 28,
+                    LifetimeSeconds = 1.4,
+                    WindupSeconds = 0.1,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
                 Id = "fireball",
                 Name = "Fireball",
-                Key = "3",
-                CooldownSeconds = 9.0,
-                DamageMultiplier = 1.8,
-                UnlockLevel = 5,
+                Key = "Weapon",
+                Description = "Launches an explosive orb that erupts on impact.",
+                CooldownSeconds = 3.8,
+                DamageMultiplier = 1.4,
+                UnlockLevel = 2,
                 ResetOnLevelUp = true,
                 ScalesWithAttackSpeed = false,
                 AutoCast = true,
-                Priority = 0.75,
+                Priority = 1.4,
                 Attack = new AttackDescriptor
                 {
                     Behavior = AttackBehavior.Projectile,
                     Range = 18,
-                    Radius = 1.2,
+                    Radius = 3.5,
                     Speed = 16,
-                    LifetimeSeconds = 2.4,
-                    WindupSeconds = 0.18,
+                    LifetimeSeconds = 2.5,
+                    WindupSeconds = 0.25,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "shadowDaggers",
+                Name = "Shadow Daggers",
+                Key = "Weapon",
+                Description = "A flurry of quick dagger strikes at close range.",
+                CooldownSeconds = 0.7,
+                DamageMultiplier = 0.6,
+                UnlockLevel = 2,
+                ResetOnLevelUp = false,
+                ScalesWithAttackSpeed = true,
+                AutoCast = true,
+                Priority = 0.6,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Melee,
+                    Range = 2.6,
+                    Radius = 1.2,
+                    Speed = 0,
+                    LifetimeSeconds = 0.35,
+                    WindupSeconds = 0.05,
                     HitsMultipleTargets = false,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "stormChaser",
+                Name = "Storm Chaser",
+                Key = "Weapon",
+                Description = "A crackling bolt that chains through clustered foes.",
+                CooldownSeconds = 2.6,
+                DamageMultiplier = 1.1,
+                UnlockLevel = 3,
+                ResetOnLevelUp = true,
+                ScalesWithAttackSpeed = false,
+                AutoCast = true,
+                Priority = 1.2,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Projectile,
+                    Range = 16,
+                    Radius = 2.2,
+                    Speed = 24,
+                    LifetimeSeconds = 1.6,
+                    WindupSeconds = 0.18,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "frostNova",
+                Name = "Frost Nova",
+                Key = "Weapon",
+                Description = "Unleashes a chilling burst that freezes the battlefield.",
+                CooldownSeconds = 6.0,
+                DamageMultiplier = 1.3,
+                UnlockLevel = 3,
+                ResetOnLevelUp = true,
+                ScalesWithAttackSpeed = false,
+                AutoCast = true,
+                Priority = 1.6,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Sweep,
+                    Range = 3.5,
+                    Radius = 5.5,
+                    Speed = 0,
+                    LifetimeSeconds = 1.2,
+                    WindupSeconds = 0.3,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = false,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "earthshatter",
+                Name = "Earthshatter",
+                Key = "Weapon",
+                Description = "Slams the ground and sends a crushing shockwave outward.",
+                CooldownSeconds = 7.5,
+                DamageMultiplier = 1.7,
+                UnlockLevel = 4,
+                ResetOnLevelUp = true,
+                ScalesWithAttackSpeed = false,
+                AutoCast = true,
+                Priority = 1.8,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Sweep,
+                    Range = 6.5,
+                    Radius = 6.0,
+                    Speed = 0,
+                    LifetimeSeconds = 1.4,
+                    WindupSeconds = 0.4,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = false,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "windBlade",
+                Name = "Wind Blade",
+                Key = "Weapon",
+                Description = "Launches a slicing gust that cuts distant foes.",
+                CooldownSeconds = 2.2,
+                DamageMultiplier = 1.0,
+                UnlockLevel = 4,
+                ResetOnLevelUp = false,
+                ScalesWithAttackSpeed = true,
+                AutoCast = true,
+                Priority = 1.1,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Projectile,
+                    Range = 24,
+                    Radius = 1.6,
+                    Speed = 30,
+                    LifetimeSeconds = 1.5,
+                    WindupSeconds = 0.12,
+                    HitsMultipleTargets = false,
+                    RequiresTarget = true,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "arcaneOrbit",
+                Name = "Arcane Orbit",
+                Key = "Weapon",
+                Description = "Summons orbiting shards that sweep around you.",
+                CooldownSeconds = 5.0,
+                DamageMultiplier = 1.2,
+                UnlockLevel = 5,
+                ResetOnLevelUp = true,
+                ScalesWithAttackSpeed = false,
+                AutoCast = true,
+                Priority = 1.5,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Sweep,
+                    Range = 4.0,
+                    Radius = 4.5,
+                    Speed = 0,
+                    LifetimeSeconds = 2.4,
+                    WindupSeconds = 0.2,
+                    HitsMultipleTargets = true,
+                    RequiresTarget = false,
+                    CanHitEnvironment = true
+                }
+            },
+            new AbilityDefinition
+            {
+                Id = "voidLance",
+                Name = "Void Lance",
+                Key = "Weapon",
+                Description = "Fires a focused beam that pierces through everything in its path.",
+                CooldownSeconds = 7.0,
+                DamageMultiplier = 2.0,
+                UnlockLevel = 6,
+                ResetOnLevelUp = true,
+                ScalesWithAttackSpeed = false,
+                AutoCast = true,
+                Priority = 2.0,
+                Attack = new AttackDescriptor
+                {
+                    Behavior = AttackBehavior.Projectile,
+                    Range = 26,
+                    Radius = 2.0,
+                    Speed = 32,
+                    LifetimeSeconds = 1.8,
+                    WindupSeconds = 0.22,
+                    HitsMultipleTargets = true,
                     RequiresTarget = true,
                     CanHitEnvironment = true
                 }
             }
         };
+
+        _abilityDefinitions = abilityDefinitions
+            .OrderBy(a => a.UnlockLevel)
+            .ThenBy(a => a.Priority)
+            .ThenBy(a => a.Name)
+            .ToArray();
+
+        _abilityDefinitionMap = _abilityDefinitions.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
 
         _worldTimer = new Timer(WorldTick, null, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
     }
@@ -138,6 +333,19 @@ public sealed class GameWorld : IDisposable
     public IReadOnlyList<PlayerStatUpgradeOption> StatUpgradeDefinitions => StatUpgradeOptions;
 
     public GameWorldOptions Options => _options;
+
+    private void InitializeDefaultLoadoutLocked(PlayerState state, DateTime now)
+    {
+        if (state.WeaponLoadout.Count > 0)
+        {
+            return;
+        }
+
+        if (_abilityDefinitionMap.TryGetValue("swordSweep", out var defaultWeapon))
+        {
+            EquipWeaponLocked(state, defaultWeapon, now, preferredSlot: 1);
+        }
+    }
 
     public PlayerState AddPlayer(string connectionId)
     {
@@ -151,6 +359,11 @@ public sealed class GameWorld : IDisposable
             VelocityZ = 0,
             LastUpdate = DateTime.UtcNow
         };
+
+        lock (playerState)
+        {
+            InitializeDefaultLoadoutLocked(playerState, DateTime.UtcNow);
+        }
 
         _players[connectionId] = playerState;
         return playerState;
@@ -202,6 +415,14 @@ public sealed class GameWorld : IDisposable
         lock (state)
         {
             return BuildAbilitySnapshotsLocked(state, leveledUp: false, DateTime.UtcNow);
+        }
+    }
+
+    public List<WeaponChoiceOption>? BuildWeaponChoices(PlayerState state)
+    {
+        lock (state)
+        {
+            return BuildWeaponChoiceOptionsLocked(state);
         }
     }
 
@@ -294,9 +515,7 @@ public sealed class GameWorld : IDisposable
             return new AbilityExecutionResult(abilityId, targetId);
         }
 
-        var abilityDefinition = _abilityDefinitions.FirstOrDefault(a =>
-            string.Equals(a.Id, abilityId, StringComparison.OrdinalIgnoreCase));
-        if (abilityDefinition == null)
+        if (!_abilityDefinitionMap.TryGetValue(abilityId, out var abilityDefinition))
         {
             return new AbilityExecutionResult(abilityId, targetId);
         }
@@ -309,22 +528,16 @@ public sealed class GameWorld : IDisposable
         double damage = 0;
         AttackInstance? createdAttack = null;
         AttackSpawnDto? spawnDto = null;
+        List<WeaponChoiceOption>? weaponChoices;
 
         lock (player)
         {
-            if (!player.Abilities.TryGetValue(abilityDefinition.Id, out var abilityState))
-            {
-                abilityState = new PlayerAbilityState
-                {
-                    AbilityId = abilityDefinition.Id,
-                    CooldownUntil = now,
-                    Unlocked = false
-                };
-                player.Abilities[abilityDefinition.Id] = abilityState;
-            }
+            var abilityState = GetOrCreateAbilityState(player, abilityDefinition.Id, now);
 
             var stats = player.Stats;
-            abilityState.Unlocked = stats.Level >= abilityDefinition.UnlockLevel;
+            var equipped = player.WeaponLoadout.Values.Any(id =>
+                string.Equals(id, abilityDefinition.Id, StringComparison.OrdinalIgnoreCase));
+            abilityState.Unlocked = equipped;
 
             var descriptor = abilityDefinition.Attack;
             var originX = player.X;
@@ -332,7 +545,7 @@ public sealed class GameWorld : IDisposable
             var originZ = player.Z;
             var heading = player.Heading;
 
-            if (abilityState.Unlocked && abilityState.CooldownUntil <= now)
+            if (equipped && abilityState.CooldownUntil <= now)
             {
                 var cooldown = abilityDefinition.CooldownSeconds;
                 if (abilityDefinition.ScalesWithAttackSpeed)
@@ -387,11 +600,12 @@ public sealed class GameWorld : IDisposable
             };
 
             abilitySnapshots = BuildAbilitySnapshotsLocked(player, leveledUp: false, now);
+            weaponChoices = BuildWeaponChoiceOptionsLocked(player);
             upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
         }
 
         var result = new AbilityExecutionResult(abilityDefinition.Id, targetId);
-        result.PlayerUpdates.Add(new PlayerStatsUpdate(player, statsSnapshot, 0, false, null, abilitySnapshots, upgradeOptions));
+        result.PlayerUpdates.Add(new PlayerStatsUpdate(player, statsSnapshot, 0, false, null, abilitySnapshots, upgradeOptions, weaponChoices));
 
         if (!shouldStrike)
         {
@@ -449,6 +663,7 @@ public sealed class GameWorld : IDisposable
         bool leveledUp;
         List<AbilityDto> abilities;
         List<PlayerStatUpgradeOption>? upgradeOptions;
+        List<WeaponChoiceOption>? weaponChoices;
         var message = reason;
 
         lock (state)
@@ -456,14 +671,25 @@ public sealed class GameWorld : IDisposable
             var stats = state.Stats;
             stats.Experience += xpAwarded;
             leveledUp = false;
+            var weaponMilestoneReached = false;
 
             while (stats.Experience >= stats.ExperienceToNext)
             {
                 stats.Experience -= stats.ExperienceToNext;
                 stats.Level++;
-                stats.UnspentStatPoints++;
-                stats.ExperienceToNext = CalculateExperienceForNext(stats.Level);
                 leveledUp = true;
+
+                var hasOpenSlot = state.WeaponLoadout.Count < MaxWeaponSlots;
+                if (stats.Level % 5 == 0 && hasOpenSlot)
+                {
+                    weaponMilestoneReached = true;
+                }
+                else
+                {
+                    stats.UnspentStatPoints++;
+                }
+
+                stats.ExperienceToNext = CalculateExperienceForNext(stats.Level);
             }
 
             if (leveledUp)
@@ -484,6 +710,9 @@ public sealed class GameWorld : IDisposable
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp, now);
+            weaponChoices = weaponMilestoneReached
+                ? PrepareWeaponChoicesLocked(state)
+                : BuildWeaponChoiceOptionsLocked(state);
             upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
 
             if (leveledUp && stats.UnspentStatPoints > 0)
@@ -498,9 +727,235 @@ public sealed class GameWorld : IDisposable
                     message = $"{message} {prompt}";
                 }
             }
+
+            if (weaponMilestoneReached && weaponChoices is { Count: > 0 })
+            {
+                const string weaponPrompt = "Select a new weapon.";
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    message = weaponPrompt;
+                }
+                else if (!message.Contains(weaponPrompt, StringComparison.OrdinalIgnoreCase))
+                {
+                    message = $"{message} {weaponPrompt}";
+                }
+            }
         }
 
-        return new PlayerStatsUpdate(state, snapshot, xpAwarded, leveledUp, message, abilities, upgradeOptions);
+        return new PlayerStatsUpdate(state, snapshot, xpAwarded, leveledUp, message, abilities, upgradeOptions, weaponChoices);
+    }
+
+    public PlayerStatsUpdate? ChooseWeapon(string playerId, string abilityId, DateTime now)
+    {
+        if (!TryGetPlayer(playerId, out var playerState) || playerState is null)
+        {
+            return null;
+        }
+
+        lock (playerState)
+        {
+            var pendingChoice = playerState.PendingWeaponChoices.Any(id =>
+                string.Equals(id, abilityId, StringComparison.OrdinalIgnoreCase));
+
+            if (!pendingChoice)
+            {
+                return null;
+            }
+
+            if (!_abilityDefinitionMap.TryGetValue(abilityId, out var definition))
+            {
+                playerState.PendingWeaponChoices.Clear();
+                return null;
+            }
+
+            var (slot, replacedId) = EquipWeaponLocked(playerState, definition, now);
+            playerState.PendingWeaponChoices.Clear();
+
+            var stats = playerState.Stats;
+            var snapshot = new PlayerStatsDto
+            {
+                Level = stats.Level,
+                Experience = stats.Experience,
+                ExperienceToNext = stats.ExperienceToNext,
+                Attack = stats.Attack,
+                MaxHealth = stats.MaxHealth,
+                CurrentHealth = stats.CurrentHealth,
+                AttackSpeed = stats.AttackSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints
+            };
+
+            var abilities = BuildAbilitySnapshotsLocked(playerState, leveledUp: false, now);
+            var upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            var weaponChoices = BuildWeaponChoiceOptionsLocked(playerState);
+
+            string message;
+            if (!string.IsNullOrWhiteSpace(replacedId))
+            {
+                var replacedName = GetAbilityDisplayName(replacedId);
+                message = $"Equipped {definition.Name} in slot {slot}, replacing {replacedName}.";
+            }
+            else
+            {
+                message = $"Equipped {definition.Name} in slot {slot}.";
+            }
+
+            return new PlayerStatsUpdate(playerState, snapshot, 0, false, message, abilities, upgradeOptions, weaponChoices);
+        }
+    }
+
+    private PlayerAbilityState GetOrCreateAbilityState(PlayerState state, string abilityId, DateTime now)
+    {
+        if (!state.Abilities.TryGetValue(abilityId, out var abilityState))
+        {
+            abilityState = new PlayerAbilityState
+            {
+                AbilityId = abilityId,
+                CooldownUntil = now,
+                Unlocked = false,
+                WeaponSlot = null
+            };
+
+            state.Abilities[abilityId] = abilityState;
+        }
+
+        return abilityState;
+    }
+
+    private (int Slot, string? ReplacedAbilityId) EquipWeaponLocked(PlayerState state, AbilityDefinition definition, DateTime now, int? preferredSlot = null)
+    {
+        var targetSlot = ResolveTargetSlot(state, definition.Id, preferredSlot);
+        string? replaced = null;
+
+        if (state.WeaponLoadout.TryGetValue(targetSlot, out var existingId))
+        {
+            if (!string.Equals(existingId, definition.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                replaced = existingId;
+                if (state.Abilities.TryGetValue(existingId, out var existingState))
+                {
+                    existingState.Unlocked = false;
+                    existingState.WeaponSlot = null;
+                    existingState.CooldownUntil = now;
+                }
+            }
+        }
+
+        var duplicates = state.WeaponLoadout
+            .Where(kv => kv.Key != targetSlot && string.Equals(kv.Value, definition.Id, StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Key)
+            .ToList();
+
+        foreach (var slot in duplicates)
+        {
+            state.WeaponLoadout.Remove(slot);
+        }
+
+        state.WeaponLoadout[targetSlot] = definition.Id;
+
+        var abilityState = GetOrCreateAbilityState(state, definition.Id, now);
+        abilityState.Unlocked = true;
+        abilityState.WeaponSlot = targetSlot;
+        abilityState.CooldownUntil = now;
+
+        return (targetSlot, replaced);
+    }
+
+    private static int ResolveTargetSlot(PlayerState state, string abilityId, int? preferredSlot)
+    {
+        if (preferredSlot is >= 1 and <= MaxWeaponSlots)
+        {
+            return preferredSlot.Value;
+        }
+
+        foreach (var kvp in state.WeaponLoadout)
+        {
+            if (string.Equals(kvp.Value, abilityId, StringComparison.OrdinalIgnoreCase))
+            {
+                return kvp.Key;
+            }
+        }
+
+        for (var slot = 1; slot <= MaxWeaponSlots; slot++)
+        {
+            if (!state.WeaponLoadout.ContainsKey(slot))
+            {
+                return slot;
+            }
+        }
+
+        return MaxWeaponSlots;
+    }
+
+    private string GetAbilityDisplayName(string abilityId)
+    {
+        return _abilityDefinitionMap.TryGetValue(abilityId, out var definition)
+            ? definition.Name
+            : abilityId;
+    }
+
+    private List<WeaponChoiceOption>? PrepareWeaponChoicesLocked(PlayerState state)
+    {
+        var eligible = _abilityDefinitions
+            .Where(definition => definition.UnlockLevel <= state.Stats.Level)
+            .ToList();
+
+        if (eligible.Count == 0)
+        {
+            state.PendingWeaponChoices.Clear();
+            return null;
+        }
+
+        var owned = new HashSet<string>(state.WeaponLoadout.Values, StringComparer.OrdinalIgnoreCase);
+        var pool = eligible.Where(definition => !owned.Contains(definition.Id)).ToList();
+
+        if (pool.Count < 3)
+        {
+            pool = eligible;
+        }
+
+        if (pool.Count == 0)
+        {
+            state.PendingWeaponChoices.Clear();
+            return null;
+        }
+
+        state.PendingWeaponChoices.Clear();
+
+        var workingPool = new List<AbilityDefinition>(pool);
+        while (state.PendingWeaponChoices.Count < Math.Min(3, workingPool.Count) && workingPool.Count > 0)
+        {
+            var index = Random.Shared.Next(workingPool.Count);
+            var pick = workingPool[index];
+            state.PendingWeaponChoices.Add(pick.Id);
+            workingPool.RemoveAt(index);
+        }
+
+        return BuildWeaponChoiceOptionsLocked(state);
+    }
+
+    private List<WeaponChoiceOption>? BuildWeaponChoiceOptionsLocked(PlayerState state)
+    {
+        if (state.PendingWeaponChoices.Count == 0)
+        {
+            return null;
+        }
+
+        var list = new List<WeaponChoiceOption>();
+        foreach (var abilityId in state.PendingWeaponChoices)
+        {
+            if (_abilityDefinitionMap.TryGetValue(abilityId, out var definition))
+            {
+                list.Add(new WeaponChoiceOption
+                {
+                    Id = definition.Id,
+                    Name = definition.Name,
+                    Description = definition.Description,
+                    UnlockLevel = definition.UnlockLevel
+                });
+            }
+        }
+
+        return list.Count > 0 ? list : null;
     }
 
     private bool TryCreateAttackInstance(
@@ -931,6 +1386,7 @@ public sealed class GameWorld : IDisposable
         PlayerStatsDto snapshot;
         List<AbilityDto> abilities;
         List<PlayerStatUpgradeOption>? upgradeOptions;
+        List<WeaponChoiceOption>? weaponChoices;
         string message;
 
         lock (state)
@@ -960,9 +1416,10 @@ public sealed class GameWorld : IDisposable
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
             upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            weaponChoices = BuildWeaponChoiceOptionsLocked(state);
         }
 
-        return new PlayerStatsUpdate(state, snapshot, 0, false, message, abilities, upgradeOptions);
+        return new PlayerStatsUpdate(state, snapshot, 0, false, message, abilities, upgradeOptions, weaponChoices);
     }
 
     private static bool TryApplyStatUpgradeLocked(PlayerStats stats, string statId, out string message)
@@ -1013,6 +1470,8 @@ public sealed class GameWorld : IDisposable
         var spawnZ = 0.0;
         var spawnY = SampleTerrainHeight(spawnX, spawnZ) + 2.0;
 
+        List<WeaponChoiceOption>? weaponChoices;
+
         lock (state)
         {
             state.X = spawnX;
@@ -1037,10 +1496,11 @@ public sealed class GameWorld : IDisposable
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
             upgradeOptions = state.Stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            weaponChoices = BuildWeaponChoiceOptionsLocked(state);
         }
 
         var playerSnapshot = CreatePlayerSnapshot(state);
-        var statsUpdate = new PlayerStatsUpdate(state, snapshot, 0, false, $"You were defeated by {mobName}.", abilities, upgradeOptions);
+        var statsUpdate = new PlayerStatsUpdate(state, snapshot, 0, false, $"You were defeated by {mobName}.", abilities, upgradeOptions, weaponChoices);
         return new PlayerRespawnUpdate(playerSnapshot, statsUpdate);
     }
 
@@ -1050,6 +1510,7 @@ public sealed class GameWorld : IDisposable
         bool defeated;
         string? reason;
         List<PlayerStatUpgradeOption>? upgradeOptions;
+        List<WeaponChoiceOption>? weaponChoices;
 
         lock (state)
         {
@@ -1072,9 +1533,10 @@ public sealed class GameWorld : IDisposable
 
             reason = defeated ? null : $"{mobName} hit you for {appliedDamage}.";
             upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            weaponChoices = BuildWeaponChoiceOptionsLocked(state);
         }
 
-        var update = new PlayerStatsUpdate(state, snapshot, 0, false, reason, null, upgradeOptions);
+        var update = new PlayerStatsUpdate(state, snapshot, 0, false, reason, null, upgradeOptions, weaponChoices);
         return new PlayerDamageResult(update, defeated);
     }
 
@@ -1278,27 +1740,30 @@ public sealed class GameWorld : IDisposable
 
     private List<AbilityDto> BuildAbilitySnapshotsLocked(PlayerState state, bool leveledUp, DateTime now)
     {
-        var list = new List<AbilityDto>(_abilityDefinitions.Length);
+        var list = new List<AbilityDto>(MaxWeaponSlots);
+        var equippedIds = new HashSet<string>(state.WeaponLoadout.Values, StringComparer.OrdinalIgnoreCase);
 
-        foreach (var definition in _abilityDefinitions)
+        foreach (var kvp in state.WeaponLoadout.OrderBy(entry => entry.Key))
         {
-            if (!state.Abilities.TryGetValue(definition.Id, out var abilityState))
+            var slot = kvp.Key;
+            if (slot < 1 || slot > MaxWeaponSlots)
             {
-                abilityState = new PlayerAbilityState
-                {
-                    AbilityId = definition.Id,
-                    Unlocked = definition.UnlockLevel <= 1,
-                    CooldownUntil = now
-                };
-                state.Abilities[definition.Id] = abilityState;
+                continue;
             }
 
+            if (!_abilityDefinitionMap.TryGetValue(kvp.Value, out var definition))
+            {
+                continue;
+            }
+
+            var abilityState = GetOrCreateAbilityState(state, definition.Id, now);
             if (leveledUp && definition.ResetOnLevelUp)
             {
                 abilityState.CooldownUntil = now;
             }
 
-            abilityState.Unlocked = state.Stats.Level >= definition.UnlockLevel;
+            abilityState.Unlocked = true;
+            abilityState.WeaponSlot = slot;
 
             var cooldownRemaining = Math.Max(0, (abilityState.CooldownUntil - now).TotalSeconds);
 
@@ -1306,15 +1771,27 @@ public sealed class GameWorld : IDisposable
             {
                 AbilityId = definition.Id,
                 Name = definition.Name,
-                Key = definition.Key,
+                Key = $"Slot {slot}",
                 CooldownSeconds = cooldownRemaining,
-                Unlocked = abilityState.Unlocked,
-                Available = abilityState.Unlocked && cooldownRemaining <= 0,
+                Unlocked = true,
+                Available = cooldownRemaining <= 0,
                 ResetOnLevelUp = definition.ResetOnLevelUp,
                 Range = definition.Attack?.Range ?? 6,
                 AutoCast = definition.AutoCast,
-                Priority = definition.Priority
+                Priority = definition.Priority,
+                WeaponSlot = slot
             });
+        }
+
+        foreach (var kv in state.Abilities)
+        {
+            var abilityState = kv.Value;
+            var isEquipped = equippedIds.Contains(kv.Key);
+            abilityState.Unlocked = isEquipped;
+            if (!isEquipped)
+            {
+                abilityState.WeaponSlot = null;
+            }
         }
 
         return list;
@@ -1440,7 +1917,8 @@ public sealed class PlayerStatsUpdate
         bool leveledUp,
         string? reason,
         IReadOnlyList<AbilityDto>? abilities,
-        IReadOnlyList<PlayerStatUpgradeOption>? upgradeOptions)
+        IReadOnlyList<PlayerStatUpgradeOption>? upgradeOptions,
+        IReadOnlyList<WeaponChoiceOption>? weaponChoices)
     {
         Player = player;
         Snapshot = snapshot;
@@ -1449,6 +1927,7 @@ public sealed class PlayerStatsUpdate
         Reason = reason;
         Abilities = abilities;
         UpgradeOptions = upgradeOptions;
+        WeaponChoices = weaponChoices;
     }
 
     public PlayerState Player { get; }
@@ -1458,6 +1937,7 @@ public sealed class PlayerStatsUpdate
     public string? Reason { get; }
     public IReadOnlyList<AbilityDto>? Abilities { get; }
     public IReadOnlyList<PlayerStatUpgradeOption>? UpgradeOptions { get; }
+    public IReadOnlyList<WeaponChoiceOption>? WeaponChoices { get; }
 }
 
 public sealed class PlayerRespawnUpdate

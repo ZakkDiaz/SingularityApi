@@ -16,6 +16,8 @@ let debugElements;
 let debugEnabled = false;
 let upgradeUi;
 let upgradeSelectionPending = false;
+let weaponUi;
+let weaponSelectionPending = false;
 
 const baselineStats = {
     level: 1,
@@ -59,6 +61,12 @@ function init() {
         remaining: document.getElementById('upgradeRemaining'),
         hint: document.getElementById('upgradeHint')
     };
+    weaponUi = {
+        overlay: document.getElementById('weaponOverlay'),
+        options: document.getElementById('weaponOptions'),
+        hint: document.getElementById('weaponHint'),
+        title: document.getElementById('weaponTitle')
+    };
     debugElements = {
         panel: document.getElementById('debugPanel'),
         ability: document.getElementById('debugAbility'),
@@ -99,6 +107,8 @@ function init() {
             else if (state.upgradeOptions) {
                 handleUpgradeAvailability(state.upgradeOptions, latestStats);
             }
+
+            handleWeaponChoices(state.weaponChoices);
         },
         onPlayerState: (snapshot) => {
             if (!snapshot) return;
@@ -146,6 +156,7 @@ function init() {
         onPlayerStats: (payload) => {
             const normalized = payload?.stats ? updateStatsHud(payload.stats) : latestStats;
             handleUpgradeAvailability(payload?.upgradeOptions, normalized);
+            handleWeaponChoices(payload?.weaponChoices);
             if (payload?.abilities) {
                 applyAbilities(payload.abilities);
             }
@@ -165,6 +176,7 @@ function init() {
 
     updateStatsHud(baselineStats);
     hideUpgradeOptions();
+    hideWeaponChoices();
     applyAbilities(createBaselineAbilitySnapshots());
 
     const url = resolveWebSocketUrl();
@@ -269,12 +281,29 @@ function applyAbilities(abilities) {
     if (!Array.isArray(abilities)) {
         return;
     }
-    player.setAbilitySnapshots(abilities);
+    const sortedAbilities = [...abilities].sort((a, b) => {
+        const slotA = typeof a.weaponSlot === 'number' ? a.weaponSlot : (typeof a.slot === 'number' ? a.slot : 99);
+        const slotB = typeof b.weaponSlot === 'number' ? b.weaponSlot : (typeof b.slot === 'number' ? b.slot : 99);
+        if (slotA !== slotB) {
+            return slotA - slotB;
+        }
+        const priorityA = typeof a.priority === 'number' ? a.priority : 1;
+        const priorityB = typeof b.priority === 'number' ? b.priority : 1;
+        if (priorityA !== priorityB) {
+            return priorityA - priorityB;
+        }
+        const nameA = a.name ?? '';
+        const nameB = b.name ?? '';
+        return nameA.localeCompare(nameB);
+    });
+
+    player.setAbilitySnapshots(sortedAbilities);
 
     const container = abilityUi.container;
     if (!container) return;
 
-    abilities.forEach(ability => {
+    const seenIds = new Set();
+    sortedAbilities.forEach(ability => {
         const id = ability.abilityId ?? ability.id;
         if (!id) {
             return;
@@ -284,19 +313,36 @@ function applyAbilities(abilities) {
         const priority = typeof ability.priority === 'number'
             ? ability.priority
             : (typeof defaults.priority === 'number' ? defaults.priority : 1);
+        const weaponSlot = typeof ability.weaponSlot === 'number'
+            ? ability.weaponSlot
+            : (typeof defaults.weaponSlot === 'number' ? defaults.weaponSlot : null);
         let slot = abilityUi.slots.get(id);
         if (!slot) {
             slot = createAbilitySlot();
             abilityUi.slots.set(id, slot);
             container.appendChild(slot.root);
         }
+        seenIds.add(id);
         slot.name.textContent = ability.name ?? defaults.name ?? id;
         slot.root.dataset.locked = ability.unlocked ? 'false' : 'true';
         slot.root.dataset.available = ability.available ? 'true' : 'false';
         slot.root.dataset.autocast = autoCast ? 'true' : 'false';
-        slot.root.dataset.keyLabel = ability.key ?? defaults.key ?? '';
+        const slotLabel = typeof weaponSlot === 'number' ? `Slot ${weaponSlot}` : '';
+        const keyLabel = slotLabel || ability.key || defaults.key || '';
+        slot.root.dataset.keyLabel = keyLabel;
         slot.root.dataset.range = typeof ability.range === 'number' ? ability.range : (defaults.range ?? '');
         slot.root.dataset.priority = priority;
+        slot.root.dataset.weaponSlot = weaponSlot ?? '';
+        slot.root.style.order = typeof weaponSlot === 'number' ? weaponSlot : 99;
+    });
+
+    Array.from(abilityUi.slots.entries()).forEach(([id, slot]) => {
+        if (!seenIds.has(id)) {
+            if (slot?.root?.parentElement) {
+                slot.root.parentElement.removeChild(slot.root);
+            }
+            abilityUi.slots.delete(id);
+        }
     });
 
     refreshAbilityCooldowns(player.getAbilityStates());
@@ -396,9 +442,107 @@ function chooseUpgrade(statId, label) {
     network.sendStatUpgrade(statId);
 }
 
+function handleWeaponChoices(options) {
+    if (Array.isArray(options) && options.length > 0) {
+        showWeaponChoices(options);
+    } else {
+        hideWeaponChoices();
+    }
+}
+
+function showWeaponChoices(options) {
+    if (!weaponUi?.overlay || !weaponUi?.options) {
+        return;
+    }
+
+    const list = Array.isArray(options) ? options.filter(opt => opt && (opt.id || opt.abilityId)) : [];
+    if (list.length === 0) {
+        hideWeaponChoices();
+        return;
+    }
+
+    weaponSelectionPending = false;
+    weaponUi.overlay.dataset.visible = 'true';
+    weaponUi.overlay.dataset.processing = 'false';
+    weaponUi.options.innerHTML = '';
+
+    list.slice(0, 3).forEach(option => {
+        const id = option?.id ?? option?.abilityId;
+        if (!id) {
+            return;
+        }
+        const name = option.name ?? id;
+        const description = option.description ?? '';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'weapon-option';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'weapon-name';
+        nameSpan.textContent = name;
+        button.appendChild(nameSpan);
+        if (description) {
+            const descSpan = document.createElement('span');
+            descSpan.className = 'weapon-desc';
+            descSpan.textContent = description;
+            button.appendChild(descSpan);
+        }
+        button.addEventListener('click', () => chooseWeapon(id, name));
+        weaponUi.options.appendChild(button);
+    });
+
+    if (weaponUi.title) {
+        weaponUi.title.textContent = 'Choose Weapon';
+    }
+    if (weaponUi.hint) {
+        weaponUi.hint.textContent = 'Select a weapon to equip';
+    }
+}
+
+function hideWeaponChoices() {
+    if (!weaponUi?.overlay) {
+        return;
+    }
+    weaponSelectionPending = false;
+    weaponUi.overlay.dataset.visible = 'false';
+    weaponUi.overlay.dataset.processing = 'false';
+    if (weaponUi.options) {
+        weaponUi.options.innerHTML = '';
+    }
+    if (weaponUi.hint) {
+        weaponUi.hint.textContent = '';
+    }
+}
+
+function chooseWeapon(abilityId, label) {
+    if (!abilityId || weaponSelectionPending) {
+        return;
+    }
+    if (!network || typeof network.sendWeaponChoice !== 'function') {
+        log('Unable to send weapon selection right now.');
+        return;
+    }
+
+    weaponSelectionPending = true;
+    if (weaponUi?.overlay) {
+        weaponUi.overlay.dataset.processing = 'true';
+    }
+    if (weaponUi?.hint) {
+        weaponUi.hint.textContent = 'Equipping weapon…';
+    }
+    if (weaponUi?.options) {
+        weaponUi.options.querySelectorAll('button').forEach(button => {
+            button.disabled = true;
+        });
+    }
+
+    log(`Equipping ${label ?? abilityId}.`);
+    network.sendWeaponChoice(abilityId);
+}
+
 function createAbilitySlot() {
     const root = document.createElement('div');
     root.className = 'ability-slot';
+    root.style.order = 99;
     const key = document.createElement('span');
     key.className = 'ability-key';
     const name = document.createElement('span');
@@ -419,7 +563,9 @@ function refreshAbilityCooldowns(abilityStates) {
         const slot = abilityUi.slots.get(state.id);
         if (!slot) return;
         slot.name.textContent = state.name ?? state.id;
-        const keyLabel = slot.root.dataset.keyLabel ?? '';
+        const slotIndex = slot.root.dataset.weaponSlot;
+        const slotLabel = slotIndex ? `Slot ${slotIndex}` : '';
+        const keyLabel = slot.root.dataset.keyLabel || slotLabel;
         if (state.autoCast) {
             slot.key.textContent = keyLabel ? `AUTO · ${keyLabel}` : 'AUTO';
         } else {

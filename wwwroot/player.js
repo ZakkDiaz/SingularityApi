@@ -104,19 +104,34 @@ export class Player {
                 const priority = typeof state.priority === 'number'
                     ? state.priority
                     : (typeof defaults.priority === 'number' ? defaults.priority : 1);
-                return { state, defaults, autoCast, range, priority };
+                const slot = typeof state.slot === 'number'
+                    ? state.slot
+                    : (typeof defaults.weaponSlot === 'number' ? defaults.weaponSlot : null);
+                return { state, defaults, autoCast, range, priority, slot };
             })
-            .sort((a, b) => a.priority - b.priority || (b.range ?? 0) - (a.range ?? 0));
+            .sort((a, b) => {
+                const slotA = typeof a.slot === 'number' ? a.slot : 99;
+                const slotB = typeof b.slot === 'number' ? b.slot : 99;
+                if (slotA !== slotB) {
+                    return slotA - slotB;
+                }
+                if (a.priority !== b.priority) {
+                    return a.priority - b.priority;
+                }
+                return (b.range ?? 0) - (a.range ?? 0);
+            });
+
+        const firstAuto = abilityEntries.find(entry => entry.autoCast && entry.state.unlocked);
+        this.primaryAbilityId = firstAuto?.state.id ?? null;
+
+        let highlightTargetId = null;
+        let triggeredDebug = null;
 
         for (const entry of abilityEntries) {
             const ability = entry.state;
             const defaults = entry.defaults;
             const autoCast = entry.autoCast;
             const range = entry.range;
-
-            if (!this.primaryAbilityId && autoCast) {
-                this.primaryAbilityId = ability.id;
-            }
 
             if (autoCast && !debugInfo.abilityId) {
                 debugInfo.abilityId = ability.id;
@@ -154,25 +169,36 @@ export class Player {
             ability.available = false;
             ability.cooldownExpiresAt = now + fallbackCooldown * 1000;
 
+            if (!triggeredDebug) {
+                triggeredDebug = {
+                    abilityId: ability.id,
+                    abilityName: ability.name ?? defaults.name ?? ability.id,
+                    abilityRange: range,
+                    targetId: targetInRange.id,
+                    targetDistance: targetInRange.distance
+                };
+            }
+
+            if (!highlightTargetId) {
+                highlightTargetId = targetInRange.id;
+            }
+        }
+
+        if (triggeredDebug) {
             debugInfo = this.createDebugInfo({
                 nearestMobId: nearest?.id ?? null,
                 nearestDistance: nearest?.distance ?? null,
-                abilityId: ability.id,
-                abilityName: ability.name ?? defaults.name ?? ability.id,
-                abilityRange: range,
-                targetId: targetInRange.id,
-                targetDistance: targetInRange.distance
+                ...triggeredDebug
             });
-
-            this.world.setHighlightedMob(targetInRange.id);
-            break;
-        }
-
-        if (!debugInfo.abilityId && this.primaryAbilityId) {
+        } else if (!debugInfo.abilityId && this.primaryAbilityId) {
             const defaults = getAbilityDefaults(this.primaryAbilityId) ?? {};
             debugInfo.abilityId = this.primaryAbilityId;
             debugInfo.abilityName = defaults.name ?? this.primaryAbilityId;
             debugInfo.abilityRange = this.abilityRanges.get(this.primaryAbilityId) ?? defaults.range ?? null;
+        }
+
+        if (highlightTargetId) {
+            this.world.setHighlightedMob(highlightTargetId);
         }
 
         this.debugInfo = debugInfo;
@@ -235,6 +261,7 @@ export class Player {
     setAbilitySnapshots(snapshots = []) {
         const now = performance.now();
         this.primaryAbilityId = null;
+        const seenIds = new Set();
         snapshots.forEach(snapshot => {
             const id = snapshot.abilityId ?? snapshot.id;
             if (!id) {
@@ -250,6 +277,9 @@ export class Player {
             const priority = typeof snapshot.priority === 'number'
                 ? snapshot.priority
                 : (typeof defaults.priority === 'number' ? defaults.priority : 1);
+            const weaponSlot = typeof snapshot.weaponSlot === 'number'
+                ? snapshot.weaponSlot
+                : (typeof defaults.weaponSlot === 'number' ? defaults.weaponSlot : null);
             const abilityState = {
                 id,
                 name: snapshot.name ?? defaults.name ?? id,
@@ -260,7 +290,8 @@ export class Player {
                 cooldownExpiresAt: now + Math.max(0, snapshot.cooldownSeconds ?? 0) * 1000,
                 autoCast,
                 range,
-                priority
+                priority,
+                slot: weaponSlot
             };
 
             if (abilityState.available) {
@@ -268,11 +299,26 @@ export class Player {
             }
 
             this.abilities.set(id, abilityState);
+            seenIds.add(id);
+        });
+
+        Array.from(this.abilities.keys()).forEach(id => {
+            if (!seenIds.has(id)) {
+                this.abilities.delete(id);
+                this.abilityRanges.delete(id);
+            }
         });
 
         const sortedAuto = Array.from(this.abilities.values())
             .filter(state => state.autoCast)
-            .sort((a, b) => (a.priority ?? 1) - (b.priority ?? 1));
+            .sort((a, b) => {
+                const slotA = typeof a.slot === 'number' ? a.slot : 99;
+                const slotB = typeof b.slot === 'number' ? b.slot : 99;
+                if (slotA !== slotB) {
+                    return slotA - slotB;
+                }
+                return (a.priority ?? 1) - (b.priority ?? 1);
+            });
         this.primaryAbilityId = sortedAuto.length > 0 ? sortedAuto[0].id : null;
     }
 
