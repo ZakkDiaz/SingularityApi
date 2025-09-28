@@ -671,14 +671,25 @@ public sealed class GameWorld : IDisposable
             var stats = state.Stats;
             stats.Experience += xpAwarded;
             leveledUp = false;
+            var weaponMilestoneReached = false;
 
             while (stats.Experience >= stats.ExperienceToNext)
             {
                 stats.Experience -= stats.ExperienceToNext;
                 stats.Level++;
-                stats.UnspentStatPoints++;
-                stats.ExperienceToNext = CalculateExperienceForNext(stats.Level);
                 leveledUp = true;
+
+                var hasOpenSlot = state.WeaponLoadout.Count < MaxWeaponSlots;
+                if (stats.Level % 5 == 0 && hasOpenSlot)
+                {
+                    weaponMilestoneReached = true;
+                }
+                else
+                {
+                    stats.UnspentStatPoints++;
+                }
+
+                stats.ExperienceToNext = CalculateExperienceForNext(stats.Level);
             }
 
             if (leveledUp)
@@ -699,7 +710,9 @@ public sealed class GameWorld : IDisposable
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp, now);
-            weaponChoices = leveledUp ? PrepareWeaponChoicesLocked(state) : BuildWeaponChoiceOptionsLocked(state);
+            weaponChoices = weaponMilestoneReached
+                ? PrepareWeaponChoicesLocked(state)
+                : BuildWeaponChoiceOptionsLocked(state);
             upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
 
             if (leveledUp && stats.UnspentStatPoints > 0)
@@ -715,7 +728,7 @@ public sealed class GameWorld : IDisposable
                 }
             }
 
-            if (leveledUp && weaponChoices is { Count: > 0 })
+            if (weaponMilestoneReached && weaponChoices is { Count: > 0 })
             {
                 const string weaponPrompt = "Select a new weapon.";
                 if (string.IsNullOrWhiteSpace(message))

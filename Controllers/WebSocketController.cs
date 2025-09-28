@@ -212,7 +212,24 @@ public static class WebSocketController
             return Task.CompletedTask;
         }
 
-        return ExecuteAbilityAsync(playerId, "swordSweep", targetId);
+        string? abilityId = null;
+        if (World.TryGetPlayer(playerId, out var state) && state is { } playerState)
+        {
+            lock (playerState)
+            {
+                if (playerState.WeaponLoadout.Count > 0)
+                {
+                    abilityId = playerState.WeaponLoadout
+                        .OrderBy(entry => entry.Key)
+                        .Select(entry => entry.Value)
+                        .FirstOrDefault(id => !string.IsNullOrWhiteSpace(id));
+                }
+            }
+        }
+
+        abilityId ??= "swordSweep";
+
+        return ExecuteAbilityAsync(playerId, abilityId, targetId);
     }
 
     private static Task HandleAbilityMessageAsync(string playerId, JsonElement root)
