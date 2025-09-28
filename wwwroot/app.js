@@ -16,6 +16,8 @@ let debugElements;
 let debugEnabled = false;
 let upgradeUi;
 let upgradeSelectionPending = false;
+let weaponUi;
+let weaponSelectionPending = false;
 
 const baselineStats = {
     level: 1,
@@ -59,6 +61,12 @@ function init() {
         remaining: document.getElementById('upgradeRemaining'),
         hint: document.getElementById('upgradeHint')
     };
+    weaponUi = {
+        overlay: document.getElementById('weaponOverlay'),
+        options: document.getElementById('weaponOptions'),
+        hint: document.getElementById('weaponHint'),
+        title: document.getElementById('weaponTitle')
+    };
     debugElements = {
         panel: document.getElementById('debugPanel'),
         ability: document.getElementById('debugAbility'),
@@ -99,6 +107,8 @@ function init() {
             else if (state.upgradeOptions) {
                 handleUpgradeAvailability(state.upgradeOptions, latestStats);
             }
+
+            handleWeaponChoices(state.weaponChoices);
         },
         onPlayerState: (snapshot) => {
             if (!snapshot) return;
@@ -146,6 +156,7 @@ function init() {
         onPlayerStats: (payload) => {
             const normalized = payload?.stats ? updateStatsHud(payload.stats) : latestStats;
             handleUpgradeAvailability(payload?.upgradeOptions, normalized);
+            handleWeaponChoices(payload?.weaponChoices);
             if (payload?.abilities) {
                 applyAbilities(payload.abilities);
             }
@@ -165,6 +176,7 @@ function init() {
 
     updateStatsHud(baselineStats);
     hideUpgradeOptions();
+    hideWeaponChoices();
     applyAbilities(createBaselineAbilitySnapshots());
 
     const url = resolveWebSocketUrl();
@@ -428,6 +440,103 @@ function chooseUpgrade(statId, label) {
     const labelText = label ?? statId;
     log(`Allocating stat point to ${labelText}.`);
     network.sendStatUpgrade(statId);
+}
+
+function handleWeaponChoices(options) {
+    if (Array.isArray(options) && options.length > 0) {
+        showWeaponChoices(options);
+    } else {
+        hideWeaponChoices();
+    }
+}
+
+function showWeaponChoices(options) {
+    if (!weaponUi?.overlay || !weaponUi?.options) {
+        return;
+    }
+
+    const list = Array.isArray(options) ? options.filter(opt => opt && (opt.id || opt.abilityId)) : [];
+    if (list.length === 0) {
+        hideWeaponChoices();
+        return;
+    }
+
+    weaponSelectionPending = false;
+    weaponUi.overlay.dataset.visible = 'true';
+    weaponUi.overlay.dataset.processing = 'false';
+    weaponUi.options.innerHTML = '';
+
+    list.slice(0, 3).forEach(option => {
+        const id = option?.id ?? option?.abilityId;
+        if (!id) {
+            return;
+        }
+        const name = option.name ?? id;
+        const description = option.description ?? '';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'weapon-option';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'weapon-name';
+        nameSpan.textContent = name;
+        button.appendChild(nameSpan);
+        if (description) {
+            const descSpan = document.createElement('span');
+            descSpan.className = 'weapon-desc';
+            descSpan.textContent = description;
+            button.appendChild(descSpan);
+        }
+        button.addEventListener('click', () => chooseWeapon(id, name));
+        weaponUi.options.appendChild(button);
+    });
+
+    if (weaponUi.title) {
+        weaponUi.title.textContent = 'Choose Weapon';
+    }
+    if (weaponUi.hint) {
+        weaponUi.hint.textContent = 'Select a weapon to equip';
+    }
+}
+
+function hideWeaponChoices() {
+    if (!weaponUi?.overlay) {
+        return;
+    }
+    weaponSelectionPending = false;
+    weaponUi.overlay.dataset.visible = 'false';
+    weaponUi.overlay.dataset.processing = 'false';
+    if (weaponUi.options) {
+        weaponUi.options.innerHTML = '';
+    }
+    if (weaponUi.hint) {
+        weaponUi.hint.textContent = '';
+    }
+}
+
+function chooseWeapon(abilityId, label) {
+    if (!abilityId || weaponSelectionPending) {
+        return;
+    }
+    if (!network || typeof network.sendWeaponChoice !== 'function') {
+        log('Unable to send weapon selection right now.');
+        return;
+    }
+
+    weaponSelectionPending = true;
+    if (weaponUi?.overlay) {
+        weaponUi.overlay.dataset.processing = 'true';
+    }
+    if (weaponUi?.hint) {
+        weaponUi.hint.textContent = 'Equipping weapon…';
+    }
+    if (weaponUi?.options) {
+        weaponUi.options.querySelectorAll('button').forEach(button => {
+            button.disabled = true;
+        });
+    }
+
+    log(`Equipping ${label ?? abilityId}.`);
+    network.sendWeaponChoice(abilityId);
 }
 
 function createAbilitySlot() {

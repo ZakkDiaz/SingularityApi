@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 
 namespace Singularity.Core;
 
@@ -24,6 +25,8 @@ public sealed class PlayerState
     public DateTime LastUpdate { get; set; } = DateTime.UtcNow;
     public PlayerStats Stats { get; } = new();
     public ConcurrentDictionary<string, PlayerAbilityState> Abilities { get; } = new();
+    public SortedDictionary<int, string> WeaponLoadout { get; } = new();
+    public List<string> PendingWeaponChoices { get; } = new();
 }
 
 public sealed class PlayerSnapshot
@@ -68,6 +71,7 @@ public sealed class PlayerAbilityState
     public string AbilityId { get; set; } = string.Empty;
     public DateTime CooldownUntil { get; set; } = DateTime.UtcNow;
     public bool Unlocked { get; set; }
+    public int? WeaponSlot { get; set; }
 }
 
 public sealed class AbilityDto
@@ -90,6 +94,7 @@ public sealed class AbilityDefinition
     public string Id { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
     public string Key { get; init; } = string.Empty;
+    public string Description { get; init; } = string.Empty;
     public double CooldownSeconds { get; init; }
     public double DamageMultiplier { get; init; }
     public int UnlockLevel { get; init; }
@@ -99,6 +104,14 @@ public sealed class AbilityDefinition
     public bool AutoCast { get; init; } = true;
     public double Priority { get; init; } = 1.0;
     public int WeaponSlot { get; init; }
+}
+
+public sealed class WeaponChoiceOption
+{
+    public string Id { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+    public string Description { get; init; } = string.Empty;
+    public int UnlockLevel { get; init; }
 }
 
 public sealed class PlayerStatUpgradeOption

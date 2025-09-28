@@ -199,6 +199,13 @@ export class Network {
         this.send({ type: 'upgradeStat', statId });
     }
 
+    sendWeaponChoice(abilityId) {
+        if (!this.isOpen() || !abilityId) {
+            return;
+        }
+        this.send({ type: 'chooseWeapon', abilityId });
+    }
+
     send(payload) {
         if (!this.isOpen()) {
             return;

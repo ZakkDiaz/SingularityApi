@@ -121,6 +121,10 @@ public static class WebSocketController
                 await HandleStatUpgradeAsync(connectionId, root);
                 break;
 
+            case "chooseWeapon":
+                await HandleWeaponChoiceAsync(connectionId, root);
+                break;
+
             default:
                 Console.WriteLine($"Unknown message type '{msgType}' from {connectionId}");
                 break;
@@ -208,7 +212,7 @@ public static class WebSocketController
             return Task.CompletedTask;
         }
 
-        return ExecuteAbilityAsync(playerId, "kineticEdge", targetId);
+        return ExecuteAbilityAsync(playerId, "swordSweep", targetId);
     }
 
     private static Task HandleAbilityMessageAsync(string playerId, JsonElement root)
@@ -257,6 +261,26 @@ public static class WebSocketController
         }
     }
 
+    private static async Task HandleWeaponChoiceAsync(string playerId, JsonElement root)
+    {
+        if (!root.TryGetProperty("abilityId", out var abilityProp) || abilityProp.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        var abilityId = abilityProp.GetString();
+        if (string.IsNullOrWhiteSpace(abilityId))
+        {
+            return;
+        }
+
+        var update = World.ChooseWeapon(playerId, abilityId, DateTime.UtcNow);
+        if (update != null)
+        {
+            await SendPlayerStatsAsync(update);
+        }
+    }
+
     private static async Task ExecuteAbilityAsync(string playerId, string abilityId, string? targetId)
     {
         var now = DateTime.UtcNow;
@@ -295,10 +319,12 @@ public static class WebSocketController
         PlayerStatsDto? statsSnapshot = null;
         List<AbilityDto>? abilitySnapshots = null;
         IReadOnlyList<PlayerStatUpgradeOption>? upgradeOptions = null;
+        IReadOnlyList<WeaponChoiceOption>? weaponChoices = null;
         if (World.TryGetPlayer(connectionId, out var playerState) && playerState is { } current)
         {
             statsSnapshot = World.BuildStatsSnapshot(current);
             abilitySnapshots = World.BuildAbilitySnapshots(current);
+            weaponChoices = World.BuildWeaponChoices(current);
             if (statsSnapshot.UnspentStatPoints > 0)
             {
                 upgradeOptions = World.StatUpgradeDefinitions;
@@ -314,7 +340,8 @@ public static class WebSocketController
             players = otherPlayers,
             stats = statsSnapshot,
             abilities = abilitySnapshots,
-            upgradeOptions
+            upgradeOptions,
+            weaponChoices
         };
 
         await SendJsonAsync(socket, payload, cancel);
@@ -387,7 +414,8 @@ public static class WebSocketController
             leveledUp = update.LeveledUp,
             reason = update.Reason,
             abilities = update.Abilities,
-            upgradeOptions = update.UpgradeOptions
+            upgradeOptions = update.UpgradeOptions,
+            weaponChoices = update.WeaponChoices
         };
 
         await SendJsonAsync(socket, payload, CancellationToken.None);

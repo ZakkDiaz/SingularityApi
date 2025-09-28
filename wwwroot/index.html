@@ -336,6 +336,87 @@
             pointer-events: none;
         }
 
+        #weaponOverlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 6, 20, 0.82);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            z-index: 1100;
+        }
+
+        #weaponOverlay[data-visible="true"] {
+            pointer-events: all;
+            opacity: 1;
+        }
+
+        #weaponOverlay[data-processing="true"] .weapon-option {
+            opacity: 0.55;
+            pointer-events: none;
+        }
+
+        #weaponPanel {
+            background: rgba(24, 20, 42, 0.95);
+            border: 1px solid rgba(140, 120, 255, 0.45);
+            border-radius: 12px;
+            padding: 24px;
+            width: min(520px, 90%);
+            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+        }
+
+        #weaponPanel h3 {
+            margin: 0 0 16px;
+            font-size: 1.6rem;
+            text-align: center;
+            color: #f0ebff;
+        }
+
+        #weaponOptions {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .weapon-option {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 14px 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(150, 130, 255, 0.4);
+            background: rgba(48, 40, 88, 0.88);
+            color: #f3edff;
+            font-size: 1.05rem;
+            cursor: pointer;
+            transition: transform 0.15s ease, background 0.15s ease;
+        }
+
+        .weapon-option:hover {
+            background: rgba(72, 60, 132, 0.95);
+            transform: translateY(-2px);
+        }
+
+        .weapon-name {
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .weapon-desc {
+            font-size: 0.9rem;
+            opacity: 0.82;
+        }
+
+        #weaponHint {
+            margin-top: 18px;
+            text-align: center;
+            font-size: 0.95rem;
+            color: #d8d2ff;
+        }
+
         #levelToast {
             position: absolute;
             top: 18%;
@@ -392,6 +473,13 @@
             <div id="upgradeRemaining"></div>
             <div id="upgradeOptions"></div>
             <div id="upgradeHint"></div>
+        </div>
+    </div>
+    <div id="weaponOverlay" data-visible="false" data-processing="false">
+        <div id="weaponPanel">
+            <h3 id="weaponTitle">Choose Weapon</h3>
+            <div id="weaponOptions"></div>
+            <div id="weaponHint"></div>
         </div>
     </div>
     <div id="levelToast">Level Up!</div>
