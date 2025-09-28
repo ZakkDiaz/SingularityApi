@@ -1,36 +1,39 @@
 // abilities.js
 
 export const ABILITY_DEFAULTS = {
-    autoAttack: {
-        name: 'Auto Attack',
-        key: '1',
+    kineticEdge: {
+        name: 'Kinetic Edge',
+        key: 'Slot 1',
+        weaponSlot: 1,
         range: 4,
-        cooldown: 1.6,
+        cooldown: 1.4,
         unlocked: true,
         resetOnLevelUp: false,
         autoCast: true,
         scalesWithAttackSpeed: true,
         priority: 1
     },
-    sweepingStrike: {
-        name: 'Sweeping Strike',
-        key: '2',
-        range: 5,
-        cooldown: 7.5,
+    aetherCyclone: {
+        name: 'Aether Cyclone',
+        key: 'Slot 2',
+        weaponSlot: 2,
+        range: 5.5,
+        cooldown: 7,
+        unlocked: false,
+        resetOnLevelUp: true,
+        autoCast: true,
+        priority: 0.7
+    },
+    singularityPiercer: {
+        name: 'Singularity Piercer',
+        key: 'Slot 3',
+        weaponSlot: 3,
+        range: 20,
+        cooldown: 9.5,
         unlocked: false,
         resetOnLevelUp: true,
         autoCast: true,
         priority: 0.5
-    },
-    fireball: {
-        name: 'Fireball',
-        key: '3',
-        range: 18,
-        cooldown: 9,
-        unlocked: false,
-        resetOnLevelUp: true,
-        autoCast: true,
-        priority: 0.75
     }
 };
 
@@ -45,7 +48,8 @@ export function createBaselineAbilitySnapshots() {
         resetOnLevelUp: Boolean(def.resetOnLevelUp),
         autoCast: def.autoCast !== false,
         range: def.range,
-        priority: typeof def.priority === 'number' ? def.priority : 1
+        priority: typeof def.priority === 'number' ? def.priority : 1,
+        weaponSlot: typeof def.weaponSlot === 'number' ? def.weaponSlot : 0
     }));
 }
 

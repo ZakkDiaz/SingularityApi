@@ -82,6 +82,7 @@ public sealed class AbilityDto
     public double Range { get; set; }
     public bool AutoCast { get; set; }
     public double Priority { get; set; }
+    public int WeaponSlot { get; set; }
 }
 
 public sealed class AbilityDefinition
@@ -97,6 +98,7 @@ public sealed class AbilityDefinition
     public AttackDescriptor? Attack { get; init; }
     public bool AutoCast { get; init; } = true;
     public double Priority { get; init; } = 1.0;
+    public int WeaponSlot { get; init; }
 }
 
 public sealed class PlayerStatUpgradeOption

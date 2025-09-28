@@ -49,15 +49,16 @@ public sealed class GameWorld : IDisposable
         _options = options ?? new GameWorldOptions();
         _environmentManager = new EnvironmentManager(_options);
         _mobManager = new MobManager(_options);
-        _abilityDefinitions = new[]
+        var abilityDefinitions = new[]
         {
             new AbilityDefinition
             {
-                Id = "autoAttack",
-                Name = "Auto Attack",
-                Key = "1",
-                CooldownSeconds = 1.6,
-                DamageMultiplier = 1.0,
+                Id = "kineticEdge",
+                Name = "Kinetic Edge",
+                Key = "Slot 1",
+                WeaponSlot = 1,
+                CooldownSeconds = 1.4,
+                DamageMultiplier = 1.1,
                 UnlockLevel = 1,
                 ResetOnLevelUp = false,
                 ScalesWithAttackSpeed = true,
@@ -66,11 +67,11 @@ public sealed class GameWorld : IDisposable
                 Attack = new AttackDescriptor
                 {
                     Behavior = AttackBehavior.Melee,
-                    Range = 3.6,
-                    Radius = 2.4,
+                    Range = 3.8,
+                    Radius = 2.2,
                     Speed = 0,
-                    LifetimeSeconds = 0.55,
-                    WindupSeconds = 0.15,
+                    LifetimeSeconds = 0.5,
+                    WindupSeconds = 0.12,
                     HitsMultipleTargets = false,
                     RequiresTarget = true,
                     CanHitEnvironment = true
@@ -78,24 +79,25 @@ public sealed class GameWorld : IDisposable
             },
             new AbilityDefinition
             {
-                Id = "sweepingStrike",
-                Name = "Sweeping Strike",
-                Key = "2",
-                CooldownSeconds = 7.5,
-                DamageMultiplier = 1.4,
+                Id = "aetherCyclone",
+                Name = "Aether Cyclone",
+                Key = "Slot 2",
+                WeaponSlot = 2,
+                CooldownSeconds = 7.0,
+                DamageMultiplier = 1.5,
                 UnlockLevel = 3,
                 ResetOnLevelUp = true,
                 ScalesWithAttackSpeed = false,
                 AutoCast = true,
-                Priority = 0.5,
+                Priority = 0.7,
                 Attack = new AttackDescriptor
                 {
                     Behavior = AttackBehavior.Sweep,
-                    Range = 4.8,
-                    Radius = 4.8,
+                    Range = 5.2,
+                    Radius = 5.0,
                     Speed = 0,
-                    LifetimeSeconds = 0.9,
-                    WindupSeconds = 0.35,
+                    LifetimeSeconds = 1.0,
+                    WindupSeconds = 0.32,
                     HitsMultipleTargets = true,
                     RequiresTarget = false,
                     CanHitEnvironment = true
@@ -103,30 +105,36 @@ public sealed class GameWorld : IDisposable
             },
             new AbilityDefinition
             {
-                Id = "fireball",
-                Name = "Fireball",
-                Key = "3",
-                CooldownSeconds = 9.0,
-                DamageMultiplier = 1.8,
+                Id = "singularityPiercer",
+                Name = "Singularity Piercer",
+                Key = "Slot 3",
+                WeaponSlot = 3,
+                CooldownSeconds = 9.5,
+                DamageMultiplier = 1.9,
                 UnlockLevel = 5,
                 ResetOnLevelUp = true,
                 ScalesWithAttackSpeed = false,
                 AutoCast = true,
-                Priority = 0.75,
+                Priority = 0.5,
                 Attack = new AttackDescriptor
                 {
                     Behavior = AttackBehavior.Projectile,
-                    Range = 18,
-                    Radius = 1.2,
-                    Speed = 16,
-                    LifetimeSeconds = 2.4,
-                    WindupSeconds = 0.18,
+                    Range = 20,
+                    Radius = 1.4,
+                    Speed = 18,
+                    LifetimeSeconds = 2.6,
+                    WindupSeconds = 0.2,
                     HitsMultipleTargets = false,
                     RequiresTarget = true,
                     CanHitEnvironment = true
                 }
             }
         };
+
+        _abilityDefinitions = abilityDefinitions
+            .OrderBy(a => a.WeaponSlot)
+            .ThenBy(a => a.Priority)
+            .ToArray();
 
         _worldTimer = new Timer(WorldTick, null, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
     }
@@ -1313,7 +1321,8 @@ public sealed class GameWorld : IDisposable
                 ResetOnLevelUp = definition.ResetOnLevelUp,
                 Range = definition.Attack?.Range ?? 6,
                 AutoCast = definition.AutoCast,
-                Priority = definition.Priority
+                Priority = definition.Priority,
+                WeaponSlot = definition.WeaponSlot
             });
         }
 

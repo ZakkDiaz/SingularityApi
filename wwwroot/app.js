@@ -269,12 +269,29 @@ function applyAbilities(abilities) {
     if (!Array.isArray(abilities)) {
         return;
     }
-    player.setAbilitySnapshots(abilities);
+    const sortedAbilities = [...abilities].sort((a, b) => {
+        const slotA = typeof a.weaponSlot === 'number' ? a.weaponSlot : (typeof a.slot === 'number' ? a.slot : 99);
+        const slotB = typeof b.weaponSlot === 'number' ? b.weaponSlot : (typeof b.slot === 'number' ? b.slot : 99);
+        if (slotA !== slotB) {
+            return slotA - slotB;
+        }
+        const priorityA = typeof a.priority === 'number' ? a.priority : 1;
+        const priorityB = typeof b.priority === 'number' ? b.priority : 1;
+        if (priorityA !== priorityB) {
+            return priorityA - priorityB;
+        }
+        const nameA = a.name ?? '';
+        const nameB = b.name ?? '';
+        return nameA.localeCompare(nameB);
+    });
+
+    player.setAbilitySnapshots(sortedAbilities);
 
     const container = abilityUi.container;
     if (!container) return;
 
-    abilities.forEach(ability => {
+    const seenIds = new Set();
+    sortedAbilities.forEach(ability => {
         const id = ability.abilityId ?? ability.id;
         if (!id) {
             return;
@@ -284,19 +301,36 @@ function applyAbilities(abilities) {
         const priority = typeof ability.priority === 'number'
             ? ability.priority
             : (typeof defaults.priority === 'number' ? defaults.priority : 1);
+        const weaponSlot = typeof ability.weaponSlot === 'number'
+            ? ability.weaponSlot
+            : (typeof defaults.weaponSlot === 'number' ? defaults.weaponSlot : null);
         let slot = abilityUi.slots.get(id);
         if (!slot) {
             slot = createAbilitySlot();
             abilityUi.slots.set(id, slot);
             container.appendChild(slot.root);
         }
+        seenIds.add(id);
         slot.name.textContent = ability.name ?? defaults.name ?? id;
         slot.root.dataset.locked = ability.unlocked ? 'false' : 'true';
         slot.root.dataset.available = ability.available ? 'true' : 'false';
         slot.root.dataset.autocast = autoCast ? 'true' : 'false';
-        slot.root.dataset.keyLabel = ability.key ?? defaults.key ?? '';
+        const slotLabel = typeof weaponSlot === 'number' ? `Slot ${weaponSlot}` : '';
+        const keyLabel = slotLabel || ability.key || defaults.key || '';
+        slot.root.dataset.keyLabel = keyLabel;
         slot.root.dataset.range = typeof ability.range === 'number' ? ability.range : (defaults.range ?? '');
         slot.root.dataset.priority = priority;
+        slot.root.dataset.weaponSlot = weaponSlot ?? '';
+        slot.root.style.order = typeof weaponSlot === 'number' ? weaponSlot : 99;
+    });
+
+    Array.from(abilityUi.slots.entries()).forEach(([id, slot]) => {
+        if (!seenIds.has(id)) {
+            if (slot?.root?.parentElement) {
+                slot.root.parentElement.removeChild(slot.root);
+            }
+            abilityUi.slots.delete(id);
+        }
     });
 
     refreshAbilityCooldowns(player.getAbilityStates());
@@ -399,6 +433,7 @@ function chooseUpgrade(statId, label) {
 function createAbilitySlot() {
     const root = document.createElement('div');
     root.className = 'ability-slot';
+    root.style.order = 99;
     const key = document.createElement('span');
     key.className = 'ability-key';
     const name = document.createElement('span');
@@ -419,7 +454,9 @@ function refreshAbilityCooldowns(abilityStates) {
         const slot = abilityUi.slots.get(state.id);
         if (!slot) return;
         slot.name.textContent = state.name ?? state.id;
-        const keyLabel = slot.root.dataset.keyLabel ?? '';
+        const slotIndex = slot.root.dataset.weaponSlot;
+        const slotLabel = slotIndex ? `Slot ${slotIndex}` : '';
+        const keyLabel = slot.root.dataset.keyLabel || slotLabel;
         if (state.autoCast) {
             slot.key.textContent = keyLabel ? `AUTO · ${keyLabel}` : 'AUTO';
         } else {

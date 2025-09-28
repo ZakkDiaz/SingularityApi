@@ -208,7 +208,7 @@ public static class WebSocketController
             return Task.CompletedTask;
         }
 
-        return ExecuteAbilityAsync(playerId, "autoAttack", targetId);
+        return ExecuteAbilityAsync(playerId, "kineticEdge", targetId);
     }
 
     private static Task HandleAbilityMessageAsync(string playerId, JsonElement root)
