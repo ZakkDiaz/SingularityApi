@@ -3,9 +3,8 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 
 const WALK_SIZE = 10;
-const TILE_SIZE = 40; // size of a single step in world units (stretched 10x)
-const HEIGHT_STEP = 1.5; // vertical distance between steps
-const TILE_THICKNESS = 1.2;
+const TILE_SIZE = 40; // base horizontal span per cell (already scaled up)
+const HEIGHT_STEP = TILE_SIZE * 0.5; // elevation delta between consecutive steps
 const MIN_WALK_DEPTH = -4;
 const MAX_WALK_DEPTH = 5;
 const PLAYER_HEIGHT_OFFSET = 1.4;
@@ -58,12 +57,14 @@ export class World {
         this.cameraTarget = new THREE.Vector3(0, 0, 0);
         this.cameraLerpSpeed = 0.08;
 
-        this.tileOriginOffset = (WALK_SIZE - 1) / 2;
-        const walkData = this.generateWalkTiles();
-        this.walkTiles = walkData.tiles;
-        this.walkHeights = walkData.heights;
-        this.walkGroup = this.buildWalkMesh();
-        this.scene.add(this.walkGroup);
+        this.cellOriginOffset = (WALK_SIZE - 1) / 2;
+        this.vertexOriginOffset = WALK_SIZE / 2;
+        const heightData = this.generateTerrainHeightMaps();
+        this.cellHeights = heightData.cellLevels;
+        this.vertexLevels = heightData.vertexLevels;
+        this.vertexHeights = heightData.vertexHeights;
+        this.walkMesh = this.buildTerrainMesh();
+        this.scene.add(this.walkMesh);
 
         this.ambientLight = new THREE.HemisphereLight(0x9bbcff, 0x1a1120, 0.85);
         this.scene.add(this.ambientLight);
@@ -99,7 +100,7 @@ export class World {
         this.camera.updateProjectionMatrix();
     }
 
-    generateWalkTiles() {
+    generateTerrainHeightMaps() {
         const coords = [];
         for (let z = 0; z < WALK_SIZE; z++) {
             if (z % 2 === 0) {
@@ -127,176 +128,92 @@ export class World {
             current = choice(deltas);
         }
 
-        const heights = Array.from({ length: WALK_SIZE }, () => Array(WALK_SIZE).fill(0));
-        const tiles = Array.from({ length: WALK_SIZE }, () => Array(WALK_SIZE).fill(null));
-
+        const cellLevels = Array.from({ length: WALK_SIZE }, () => Array(WALK_SIZE).fill(0));
         for (let index = 0; index < sequenceLength; index++) {
             const { x, z } = coords[index];
-            const height = heightSequence[index];
-            heights[z][x] = height;
-            const tile = tiles[z][x] ?? { height, ramp: null, cornerHeights: null };
-            tile.height = height;
-            tile.ramp = null;
-            tiles[z][x] = tile;
+            cellLevels[z][x] = heightSequence[index];
         }
 
-        for (let index = 1; index < sequenceLength; index++) {
-            const currentCoord = coords[index];
-            const previousCoord = coords[index - 1];
-            const currentHeight = heightSequence[index];
-            const previousHeight = heightSequence[index - 1];
-            if (currentHeight === previousHeight) {
-                continue;
+        const vertexLevels = Array.from({ length: WALK_SIZE + 1 }, () => Array(WALK_SIZE + 1).fill(0));
+        for (let vz = 0; vz <= WALK_SIZE; vz++) {
+            for (let vx = 0; vx <= WALK_SIZE; vx++) {
+                const samples = [];
+                if (vx > 0 && vz > 0) samples.push(cellLevels[vz - 1]?.[vx - 1]);
+                if (vx > 0 && vz < WALK_SIZE) samples.push(cellLevels[vz]?.[vx - 1]);
+                if (vx < WALK_SIZE && vz > 0) samples.push(cellLevels[vz - 1]?.[vx]);
+                if (vx < WALK_SIZE && vz < WALK_SIZE) samples.push(cellLevels[vz]?.[vx]);
+
+                const validSamples = samples.filter(sample => sample !== undefined && sample !== null);
+                const average = validSamples.length > 0
+                    ? validSamples.reduce((sum, value) => sum + value, 0) / validSamples.length
+                    : 0;
+                const quantized = Math.round(average);
+                vertexLevels[vz][vx] = clamp(quantized, MIN_WALK_DEPTH, MAX_WALK_DEPTH);
             }
-            const tile = tiles[currentCoord.z][currentCoord.x];
-            tile.ramp = this.createRampInfo(previousCoord, currentCoord, previousHeight, currentHeight);
+        }
+
+        const vertexHeights = vertexLevels.map(row => row.map(level => level * HEIGHT_STEP));
+        return { cellLevels, vertexLevels, vertexHeights };
+    }
+
+    buildTerrainMesh() {
+        const vertexCountPerAxis = WALK_SIZE + 1;
+        const positions = [];
+        const indices = [];
+        const colors = [];
+        const uvs = [];
+        const color = new THREE.Color();
+        const minLevel = MIN_WALK_DEPTH;
+        const maxLevel = MAX_WALK_DEPTH;
+        const levelSpan = Math.max(maxLevel - minLevel, 1);
+
+        for (let vz = 0; vz < vertexCountPerAxis; vz++) {
+            for (let vx = 0; vx < vertexCountPerAxis; vx++) {
+                const level = this.vertexLevels[vz][vx];
+                const height = this.vertexHeights[vz][vx];
+                const worldX = (vx - this.vertexOriginOffset) * TILE_SIZE;
+                const worldZ = (vz - this.vertexOriginOffset) * TILE_SIZE;
+                positions.push(worldX, height, worldZ);
+
+                const t = (level - minLevel) / levelSpan;
+                color.setHSL(clamp(0.55 - t * 0.18, 0.38, 0.68), 0.5, clamp(0.25 + t * 0.35, 0.2, 0.65));
+                colors.push(color.r, color.g, color.b);
+
+                uvs.push(vx / WALK_SIZE, vz / WALK_SIZE);
+            }
         }
 
         for (let z = 0; z < WALK_SIZE; z++) {
             for (let x = 0; x < WALK_SIZE; x++) {
-                const tile = tiles[z][x];
-                tile.cornerHeights = this.computeCornerHeights(tile);
+                const topLeft = z * vertexCountPerAxis + x;
+                const topRight = topLeft + 1;
+                const bottomLeft = (z + 1) * vertexCountPerAxis + x;
+                const bottomRight = bottomLeft + 1;
+
+                indices.push(topLeft, bottomLeft, topRight);
+                indices.push(topRight, bottomLeft, bottomRight);
             }
         }
-
-        return { tiles, heights };
-    }
-
-    createRampInfo(previousCoord, currentCoord, entryHeight, exitHeight) {
-        const dx = currentCoord.x - previousCoord.x;
-        const dz = currentCoord.z - previousCoord.z;
-        let entry = 'west';
-        if (dx === 1) {
-            entry = 'west';
-        } else if (dx === -1) {
-            entry = 'east';
-        } else if (dz === 1) {
-            entry = 'north';
-        } else if (dz === -1) {
-            entry = 'south';
-        }
-        const axis = entry === 'west' || entry === 'east' ? 'x' : 'z';
-        return { axis, entry, entryHeight, exitHeight };
-    }
-
-    computeCornerHeights(tile) {
-        const height = tile?.height ?? 0;
-        if (!tile?.ramp) {
-            return { nw: height, ne: height, se: height, sw: height };
-        }
-        const { entry, entryHeight, exitHeight } = tile.ramp;
-        switch (entry) {
-            case 'west':
-                return { nw: entryHeight, sw: entryHeight, ne: exitHeight, se: exitHeight };
-            case 'east':
-                return { ne: entryHeight, se: entryHeight, nw: exitHeight, sw: exitHeight };
-            case 'north':
-                return { nw: entryHeight, ne: entryHeight, sw: exitHeight, se: exitHeight };
-            case 'south':
-                return { sw: entryHeight, se: entryHeight, nw: exitHeight, ne: exitHeight };
-            default:
-                return { nw: height, ne: height, se: height, sw: height };
-        }
-    }
-
-    buildWalkMesh() {
-        const group = new THREE.Group();
-        group.receiveShadow = true;
-
-        for (let z = 0; z < WALK_SIZE; z++) {
-            for (let x = 0; x < WALK_SIZE; x++) {
-                const tileInfo = this.walkTiles[z][x];
-                const tile = this.createTileMesh(tileInfo);
-                const worldX = (x - this.tileOriginOffset) * TILE_SIZE;
-                const worldZ = (z - this.tileOriginOffset) * TILE_SIZE;
-                tile.position.set(worldX, 0, worldZ);
-                group.add(tile);
-            }
-        }
-
-        const undersideSize = WALK_SIZE * TILE_SIZE + TILE_SIZE * 0.4;
-        const undersideThickness = TILE_SIZE * 0.25;
-        const lowestBase = MIN_WALK_DEPTH * HEIGHT_STEP - TILE_THICKNESS;
-        const undersideDepth = lowestBase - undersideThickness * 0.5 - TILE_THICKNESS;
-        const undersideGeometry = new THREE.BoxGeometry(undersideSize, undersideThickness, undersideSize);
-        const undersideMaterial = new THREE.MeshStandardMaterial({ color: 0x181924, metalness: 0.05, roughness: 0.85 });
-        const underside = new THREE.Mesh(undersideGeometry, undersideMaterial);
-        underside.position.y = undersideDepth;
-        underside.receiveShadow = true;
-        group.add(underside);
-
-        return group;
-    }
-
-    createTileMesh(tileInfo) {
-        const heightIndex = tileInfo?.height ?? 0;
-        const heightColor = new THREE.Color();
-        const hue = clamp(0.62 - heightIndex * 0.035, 0.45, 0.75);
-        const lightness = clamp(0.32 + heightIndex * 0.04, 0.18, 0.6);
-        heightColor.setHSL(hue, 0.45, lightness);
-
-        const material = new THREE.MeshStandardMaterial({
-            color: heightColor,
-            metalness: 0.15,
-            roughness: 0.85,
-            flatShading: true
-        });
-        const geometry = this.createTileGeometry(tileInfo);
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-
-        const edgeGeometry = new THREE.EdgesGeometry(geometry);
-        const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x1f2331, linewidth: 1 });
-        const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
-        mesh.add(edges);
-
-        return mesh;
-    }
-
-    createTileGeometry(tileInfo) {
-        const halfSize = TILE_SIZE * 0.5;
-        const corners = tileInfo?.cornerHeights ?? { nw: 0, ne: 0, se: 0, sw: 0 };
-        const topHeights = {
-            nw: (corners.nw ?? 0) * HEIGHT_STEP,
-            ne: (corners.ne ?? 0) * HEIGHT_STEP,
-            se: (corners.se ?? 0) * HEIGHT_STEP,
-            sw: (corners.sw ?? 0) * HEIGHT_STEP
-        };
-        const minTop = Math.min(topHeights.nw, topHeights.ne, topHeights.se, topHeights.sw);
-        const baseY = minTop - TILE_THICKNESS;
-
-        const vertices = new Float32Array([
-            -halfSize, topHeights.nw, -halfSize,
-            halfSize, topHeights.ne, -halfSize,
-            halfSize, topHeights.se, halfSize,
-            -halfSize, topHeights.sw, halfSize,
-            -halfSize, baseY, -halfSize,
-            halfSize, baseY, -halfSize,
-            halfSize, baseY, halfSize,
-            -halfSize, baseY, halfSize
-        ]);
-
-        const indices = [
-            0, 1, 2,
-            0, 2, 3,
-            7, 6, 5,
-            7, 5, 4,
-            0, 1, 5,
-            0, 5, 4,
-            1, 2, 6,
-            1, 6, 5,
-            2, 3, 7,
-            2, 7, 6,
-            3, 0, 4,
-            3, 4, 7
-        ];
 
         const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
         geometry.setIndex(indices);
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
         geometry.computeVertexNormals();
-        return geometry;
+
+        const material = new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            metalness: 0.12,
+            roughness: 0.82,
+            flatShading: false
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.castShadow = false;
+        mesh.receiveShadow = true;
+        mesh.name = 'terrain';
+        return mesh;
     }
 
     createPlayerMesh(baseColor) {
@@ -706,32 +623,27 @@ export class World {
     }
 
     getGroundHeight(x, z) {
-        const normalizedX = x / TILE_SIZE + this.tileOriginOffset;
-        const normalizedZ = z / TILE_SIZE + this.tileOriginOffset;
-        const ix = Math.round(normalizedX);
-        const iz = Math.round(normalizedZ);
-        if (ix < 0 || ix >= WALK_SIZE || iz < 0 || iz >= WALK_SIZE) {
+        const gridX = x / TILE_SIZE + this.vertexOriginOffset;
+        const gridZ = z / TILE_SIZE + this.vertexOriginOffset;
+        if (gridX < 0 || gridX > WALK_SIZE || gridZ < 0 || gridZ > WALK_SIZE) {
             return 0;
         }
-        const tile = this.walkTiles?.[iz]?.[ix];
-        if (!tile) {
-            return 0;
-        }
-        const corners = tile.cornerHeights ?? { nw: tile.height, ne: tile.height, se: tile.height, sw: tile.height };
-        const halfSize = TILE_SIZE * 0.5;
-        const tileCenterX = (ix - this.tileOriginOffset) * TILE_SIZE;
-        const tileCenterZ = (iz - this.tileOriginOffset) * TILE_SIZE;
-        const localX = clamp((x - tileCenterX + halfSize) / (TILE_SIZE), 0, 1);
-        const localZ = clamp((z - tileCenterZ + halfSize) / (TILE_SIZE), 0, 1);
 
-        const topNW = (corners.nw ?? tile.height) * HEIGHT_STEP;
-        const topNE = (corners.ne ?? tile.height) * HEIGHT_STEP;
-        const topSE = (corners.se ?? tile.height) * HEIGHT_STEP;
-        const topSW = (corners.sw ?? tile.height) * HEIGHT_STEP;
+        const epsilon = 1e-6;
+        const clampedX = clamp(gridX, 0, WALK_SIZE - epsilon);
+        const clampedZ = clamp(gridZ, 0, WALK_SIZE - epsilon);
+        const ix = Math.floor(clampedX);
+        const iz = Math.floor(clampedZ);
+        const fx = clampedX - ix;
+        const fz = clampedZ - iz;
 
-        const northHeight = topNW * (1 - localX) + topNE * localX;
-        const southHeight = topSW * (1 - localX) + topSE * localX;
-        const interpolated = northHeight * (1 - localZ) + southHeight * localZ;
-        return interpolated;
+        const h00 = this.vertexHeights?.[iz]?.[ix] ?? 0;
+        const h10 = this.vertexHeights?.[iz]?.[ix + 1] ?? h00;
+        const h01 = this.vertexHeights?.[iz + 1]?.[ix] ?? h00;
+        const h11 = this.vertexHeights?.[iz + 1]?.[ix + 1] ?? h10;
+
+        const north = h00 * (1 - fx) + h10 * fx;
+        const south = h01 * (1 - fx) + h11 * fx;
+        return north * (1 - fz) + south * fz;
     }
 }
