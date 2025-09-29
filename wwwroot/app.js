@@ -27,6 +27,7 @@ const baselineStats = {
     experience: 0,
     experienceToNext: 80,
     attackSpeed: 1.0,
+    moveSpeed: 12,
     unspentStatPoints: 0
 };
 
@@ -45,6 +46,7 @@ function init() {
         level: document.getElementById('levelValue'),
         attack: document.getElementById('attackValue'),
         attackSpeed: document.getElementById('attackSpeedValue'),
+        moveSpeed: document.getElementById('moveSpeedValue'),
         health: document.getElementById('healthValue'),
         xpText: document.getElementById('xpText'),
         xpFill: document.getElementById('xpFill'),
@@ -227,6 +229,7 @@ function updateStatsHud(stats) {
         experience: stats?.experience ?? baselineStats.experience,
         experienceToNext: stats?.experienceToNext ?? baselineStats.experienceToNext,
         attackSpeed: stats?.attackSpeed ?? baselineStats.attackSpeed,
+        moveSpeed: stats?.moveSpeed ?? baselineStats.moveSpeed,
         unspentStatPoints: stats?.unspentStatPoints ?? baselineStats.unspentStatPoints
     };
 
@@ -235,6 +238,7 @@ function updateStatsHud(stats) {
     const currentHealth = Math.round(normalized.currentHealth);
     const maxHealth = Math.round(normalized.maxHealth);
     const attackSpeed = typeof normalized.attackSpeed === 'number' ? normalized.attackSpeed : baselineStats.attackSpeed;
+    const moveSpeed = typeof normalized.moveSpeed === 'number' ? normalized.moveSpeed : baselineStats.moveSpeed;
     const experience = Math.max(0, Math.round(normalized.experience));
     const experienceToNext = Math.max(0, Math.round(normalized.experienceToNext));
 
@@ -244,6 +248,9 @@ function updateStatsHud(stats) {
 
     if (hudElements.attackSpeed) {
         hudElements.attackSpeed.textContent = `${attackSpeed.toFixed(2)}x`;
+    }
+    if (hudElements.moveSpeed) {
+        hudElements.moveSpeed.textContent = `${moveSpeed.toFixed(1)} u/s`;
     }
 
     const fraction = experienceToNext > 0 ? Math.min(1, experience / experienceToNext) : 0;
@@ -258,6 +265,7 @@ function updateStatsHud(stats) {
         experience,
         experienceToNext,
         attackSpeed,
+        moveSpeed,
         unspentStatPoints: Math.max(0, Math.round(Number(normalized.unspentStatPoints ?? 0)))
     };
 

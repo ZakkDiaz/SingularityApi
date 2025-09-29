@@ -7,7 +7,7 @@ const TILE_SIZE = 40; // base horizontal span per cell (already scaled up)
 const HEIGHT_STEP = TILE_SIZE * 0.5; // elevation delta between consecutive steps
 const MIN_WALK_DEPTH = -4;
 const MAX_WALK_DEPTH = 5;
-const PLAYER_HEIGHT_OFFSET = 1.4;
+export const PLAYER_HEIGHT_OFFSET = 1.4;
 const MOB_HEIGHT_OFFSET = 1.2;
 const ATTACK_HEIGHT = 0.2;
 
@@ -24,7 +24,7 @@ function choice(options) {
 export class World {
     constructor() {
         this.localPlayerId = null;
-        this.localPlayer = { x: 0, z: 0, heading: 0 };
+        this.localPlayer = { x: 0, y: PLAYER_HEIGHT_OFFSET, z: 0, heading: 0 };
         this.remotePlayers = new Map();
         this.mobs = new Map();
         this.attacks = new Map();
@@ -36,7 +36,7 @@ export class World {
 
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x0f1118);
-        this.scene.fog = new THREE.Fog(0x0f1118, 30, 120);
+        this.scene.fog = null;
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
         this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -56,6 +56,13 @@ export class World {
         this.camera.position.set(0, 28, 28);
         this.cameraTarget = new THREE.Vector3(0, 0, 0);
         this.cameraLerpSpeed = 0.08;
+        this.cameraYaw = 0;
+        this.cameraPitch = -0.6;
+        this.cameraDistance = 32;
+        this.minCameraDistance = 12;
+        this.maxCameraDistance = 80;
+        this.headingListener = null;
+        this.pointerLocked = false;
 
         this.cellOriginOffset = (WALK_SIZE - 1) / 2;
         this.vertexOriginOffset = WALK_SIZE / 2;
@@ -90,6 +97,7 @@ export class World {
 
         window.addEventListener('resize', () => this.handleResize());
         this.handleResize();
+        this.initCameraControls();
     }
 
     handleResize() {
@@ -98,6 +106,50 @@ export class World {
         this.renderer.setSize(width, height);
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
+    }
+
+    initCameraControls() {
+        const canvas = this.renderer.domElement;
+        if (!canvas) {
+            return;
+        }
+
+        canvas.addEventListener('click', () => {
+            if (canvas.requestPointerLock) {
+                canvas.requestPointerLock();
+            }
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            this.pointerLocked = document.pointerLockElement === canvas;
+        });
+
+        document.addEventListener('mousemove', (event) => {
+            if (!this.pointerLocked) {
+                return;
+            }
+            const yawDelta = (event.movementX ?? 0) * 0.0025;
+            const pitchDelta = (event.movementY ?? 0) * 0.0025;
+            this.cameraYaw -= yawDelta;
+            this.cameraPitch = clamp(this.cameraPitch - pitchDelta, -1.3, 0.35);
+            if (typeof this.headingListener === 'function') {
+                this.headingListener(this.cameraYaw);
+            }
+        });
+
+        canvas.addEventListener('wheel', (event) => {
+            event.preventDefault();
+            const delta = (event.deltaY ?? 0) * 0.05;
+            this.cameraDistance = clamp(this.cameraDistance + delta, this.minCameraDistance, this.maxCameraDistance);
+        }, { passive: false });
+    }
+
+    setHeadingListener(listener) {
+        this.headingListener = listener;
+    }
+
+    setCameraYaw(yaw) {
+        this.cameraYaw = yaw;
     }
 
     generateTerrainHeightMaps() {
@@ -293,12 +345,16 @@ export class World {
         this.localPlayerId = id;
     }
 
-    updateLocalPlayer(x, z, heading = 0) {
-        this.localPlayer = { x, z, heading };
-        const y = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
-        this.localPlayerMesh.position.set(x, y, z);
+    updateLocalPlayer({ x = 0, y = null, z = 0, heading = 0 } = {}) {
+        const groundY = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
+        const actualY = typeof y === 'number' ? Math.max(groundY, y) : groundY;
+        this.localPlayer = { x, y: actualY, z, heading };
+        this.localPlayerMesh.position.set(x, actualY, z);
         this.localPlayerMesh.rotation.y = heading;
-        this.cameraTarget.set(x, y + 2.5, z);
+        this.cameraTarget.set(x, actualY + 1.8, z);
+        if (!this.pointerLocked) {
+            this.cameraYaw = heading;
+        }
     }
 
     upsertRemotePlayer(snapshot) {
@@ -306,7 +362,12 @@ export class World {
             return;
         }
         if (snapshot.playerId === this.localPlayerId) {
-            this.updateLocalPlayer(snapshot.x ?? 0, snapshot.z ?? 0, snapshot.heading ?? 0);
+            this.updateLocalPlayer({
+                x: snapshot.x ?? 0,
+                y: typeof snapshot.y === 'number' ? snapshot.y : null,
+                z: snapshot.z ?? 0,
+                heading: snapshot.heading ?? 0
+            });
             return;
         }
 
@@ -510,10 +571,19 @@ export class World {
     }
 
     updateCamera() {
+        const cosPitch = Math.cos(this.cameraPitch);
+        const sinPitch = Math.sin(this.cameraPitch);
+        const sinYaw = Math.sin(this.cameraYaw);
+        const cosYaw = Math.cos(this.cameraYaw);
+
+        const offsetX = sinYaw * cosPitch * this.cameraDistance;
+        const offsetY = sinPitch * this.cameraDistance;
+        const offsetZ = cosYaw * cosPitch * this.cameraDistance;
+
         const desiredPosition = new THREE.Vector3(
-            this.cameraTarget.x + Math.sin(this.localPlayer.heading ?? 0) * -18,
-            this.cameraTarget.y + 16,
-            this.cameraTarget.z + Math.cos(this.localPlayer.heading ?? 0) * -18
+            this.cameraTarget.x - offsetX,
+            this.cameraTarget.y - offsetY,
+            this.cameraTarget.z - offsetZ
         );
         this.camera.position.lerp(desiredPosition, this.cameraLerpSpeed);
         this.camera.lookAt(this.cameraTarget);
