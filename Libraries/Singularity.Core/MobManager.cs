@@ -201,7 +201,7 @@ public sealed class MobManager
                         var bestDistanceSq = _options.MobAggroRange * _options.MobAggroRange;
                         foreach (var observation in players.Values)
                         {
-                            if (observation.CurrentHealth <= 0)
+                            if (observation.CurrentHealth <= 0 || observation.IsEthereal)
                             {
                                 continue;
                             }
@@ -218,7 +218,7 @@ public sealed class MobManager
                     }
 
                     PlayerObservation? targetObservation = null;
-                    if (state.TargetPlayerId != null && players.TryGetValue(state.TargetPlayerId, out var obs))
+                    if (state.TargetPlayerId != null && players.TryGetValue(state.TargetPlayerId, out var obs) && !obs.IsEthereal)
                     {
                         targetObservation = obs;
                     }
@@ -226,35 +226,42 @@ public sealed class MobManager
                     if (targetObservation.HasValue)
                     {
                         var target = targetObservation.Value;
-                        var dx = target.X - state.X;
-                        var dz = target.Z - state.Z;
-                        var distance = Math.Sqrt(dx * dx + dz * dz);
-
-                        if (distance > 0.01)
-                        {
-                            var step = Math.Min(distance, _options.MobMoveSpeed * deltaSeconds);
-                            state.X += dx / distance * step;
-                            state.Z += dz / distance * step;
-                            state.Heading = Math.Atan2(dx, dz);
-                            state.Y = sampleTerrainHeight(state.X, state.Z) + state.HeightOffset;
-                            changed = true;
-                        }
-
-                        if (distance > _options.MobAggroRange * 1.35)
+                        if (target.IsEthereal)
                         {
                             state.TargetPlayerId = null;
                         }
-                        else if (distance <= _options.MobAttackRange + 0.1 && state.AttackCooldown <= 0)
+                        else
                         {
-                            state.AttackCooldown = _options.MobAttackCooldown;
-                            result.Attacks.Add(new MobAttackEvent
+                            var dx = target.X - state.X;
+                            var dz = target.Z - state.Z;
+                            var distance = Math.Sqrt(dx * dx + dz * dz);
+
+                            if (distance > 0.01)
                             {
-                                MobId = mobId,
-                                PlayerId = target.PlayerId,
-                                Damage = _options.MobAttackDamage,
-                                MobName = mobBlueprint?.Name ?? "Enemy"
-                            });
-                            changed = true;
+                                var step = Math.Min(distance, _options.MobMoveSpeed * deltaSeconds);
+                                state.X += dx / distance * step;
+                                state.Z += dz / distance * step;
+                                state.Heading = Math.Atan2(dx, dz);
+                                state.Y = sampleTerrainHeight(state.X, state.Z) + state.HeightOffset;
+                                changed = true;
+                            }
+
+                            if (distance > _options.MobAggroRange * 1.35)
+                            {
+                                state.TargetPlayerId = null;
+                            }
+                            else if (distance <= _options.MobAttackRange + 0.1 && state.AttackCooldown <= 0)
+                            {
+                                state.AttackCooldown = _options.MobAttackCooldown;
+                                result.Attacks.Add(new MobAttackEvent
+                                {
+                                    MobId = mobId,
+                                    PlayerId = target.PlayerId,
+                                    Damage = _options.MobAttackDamage,
+                                    MobName = mobBlueprint?.Name ?? "Enemy"
+                                });
+                                changed = true;
+                            }
                         }
                     }
                     else
@@ -403,13 +410,14 @@ public sealed class MobAttackEvent
 
 public readonly struct PlayerObservation
 {
-    public PlayerObservation(string playerId, double x, double y, double z, int currentHealth)
+    public PlayerObservation(string playerId, double x, double y, double z, int currentHealth, bool isEthereal)
     {
         PlayerId = playerId;
         X = x;
         Y = y;
         Z = z;
         CurrentHealth = currentHealth;
+        IsEthereal = isEthereal;
     }
 
     public string PlayerId { get; }
@@ -417,4 +425,5 @@ public readonly struct PlayerObservation
     public double Y { get; }
     public double Z { get; }
     public int CurrentHealth { get; }
+    public bool IsEthereal { get; }
 }

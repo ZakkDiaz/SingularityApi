@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using Singularity.Core.Noise;
 
 namespace Singularity.Core;
 
@@ -18,6 +17,7 @@ public sealed class GameWorld : IDisposable
     private readonly Dictionary<string, AbilityDefinition> _abilityDefinitionMap;
     private readonly object _attackLock = new();
     private readonly Dictionary<string, AttackInstance> _activeAttacks = new();
+    private const double PlayerHeightOffset = 1.4;
     private static readonly PlayerStatUpgradeOption[] StatUpgradeOptions =
     {
         new()
@@ -37,12 +37,29 @@ public sealed class GameWorld : IDisposable
             Id = "attackSpeed",
             Name = "Finesse",
             Description = "10% faster attacks"
+        },
+        new()
+        {
+            Id = "moveSpeed",
+            Name = "Swiftness",
+            Description = "+1 move speed"
         }
     };
+    private static readonly Dictionary<string, PlayerStatUpgradeOption> StatUpgradeMap = StatUpgradeOptions
+        .ToDictionary(option => option.Id, StringComparer.OrdinalIgnoreCase);
+    private const int WalkSize = 10;
+    private const double TileSize = 40.0;
+    private const double HeightStep = TileSize * 0.5;
+    private const int MinWalkDepth = -4;
+    private const int MaxWalkDepth = 5;
     private readonly Timer _worldTimer;
     private DateTime _lastWorldTick = DateTime.UtcNow;
     private double _timeOfDayFraction = 0.25;
     private readonly object _worldClockLock = new();
+    private readonly double[,] _cellLevels = new double[WalkSize, WalkSize];
+    private readonly double[,] _vertexLevels = new double[WalkSize + 1, WalkSize + 1];
+    private readonly double[,] _vertexHeights = new double[WalkSize + 1, WalkSize + 1];
+    private readonly double _vertexOriginOffset = WalkSize / 2.0;
 
     public event EventHandler<WorldTickEventArgs>? WorldTicked;
 
@@ -51,6 +68,7 @@ public sealed class GameWorld : IDisposable
         _options = options ?? new GameWorldOptions();
         _environmentManager = new EnvironmentManager(_options);
         _mobManager = new MobManager(_options);
+        InitializeTerrainHeightMaps();
         var abilityDefinitions = new[]
         {
             new AbilityDefinition
@@ -352,7 +370,7 @@ public sealed class GameWorld : IDisposable
         var spawnX = 0.0;
         var spawnZ = 0.0;
         var groundY = SampleTerrainHeight(spawnX, spawnZ);
-        var playerState = new PlayerState(connectionId, $"Explorer-{connectionId[..Math.Min(8, connectionId.Length)]}", spawnX, groundY + 2.0, spawnZ)
+        var playerState = new PlayerState(connectionId, $"Explorer-{connectionId[..Math.Min(8, connectionId.Length)]}", spawnX, groundY + PlayerHeightOffset, spawnZ)
         {
             Heading = 0,
             VelocityX = 0,
@@ -363,6 +381,8 @@ public sealed class GameWorld : IDisposable
         lock (playerState)
         {
             InitializeDefaultLoadoutLocked(playerState, DateTime.UtcNow);
+            playerState.IsEthereal = false;
+            playerState.PendingStatChoices.Clear();
         }
 
         _players[connectionId] = playerState;
@@ -396,6 +416,7 @@ public sealed class GameWorld : IDisposable
     {
         lock (state)
         {
+            state.IsEthereal = state.Stats.UnspentStatPoints > 0 || state.PendingWeaponChoices.Count > 0;
             return new PlayerStatsDto
             {
                 Level = state.Stats.Level,
@@ -405,7 +426,9 @@ public sealed class GameWorld : IDisposable
                 MaxHealth = state.Stats.MaxHealth,
                 CurrentHealth = state.Stats.CurrentHealth,
                 AttackSpeed = state.Stats.AttackSpeed,
-                UnspentStatPoints = state.Stats.UnspentStatPoints
+                MoveSpeed = state.Stats.MoveSpeed,
+                UnspentStatPoints = state.Stats.UnspentStatPoints,
+                IsEthereal = state.IsEthereal
             };
         }
     }
@@ -423,6 +446,14 @@ public sealed class GameWorld : IDisposable
         lock (state)
         {
             return BuildWeaponChoiceOptionsLocked(state);
+        }
+    }
+
+    public List<PlayerStatUpgradeOption>? BuildStatUpgradeOptions(PlayerState state)
+    {
+        lock (state)
+        {
+            return BuildStatUpgradeOptionsLocked(state);
         }
     }
 
@@ -515,6 +546,11 @@ public sealed class GameWorld : IDisposable
             return new AbilityExecutionResult(abilityId, targetId);
         }
 
+        if (playerState.IsEthereal)
+        {
+            return new AbilityExecutionResult(abilityId, targetId);
+        }
+
         if (!_abilityDefinitionMap.TryGetValue(abilityId, out var abilityDefinition))
         {
             return new AbilityExecutionResult(abilityId, targetId);
@@ -596,12 +632,14 @@ public sealed class GameWorld : IDisposable
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                MoveSpeed = stats.MoveSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints,
+                IsEthereal = player.IsEthereal
             };
 
             abilitySnapshots = BuildAbilitySnapshotsLocked(player, leveledUp: false, now);
             weaponChoices = BuildWeaponChoiceOptionsLocked(player);
-            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            upgradeOptions = BuildStatUpgradeOptionsLocked(player);
         }
 
         var result = new AbilityExecutionResult(abilityDefinition.Id, targetId);
@@ -695,6 +733,7 @@ public sealed class GameWorld : IDisposable
             if (leveledUp)
             {
                 stats.CurrentHealth = stats.MaxHealth;
+                state.PendingStatChoices.Clear();
             }
 
             snapshot = new PlayerStatsDto
@@ -706,14 +745,19 @@ public sealed class GameWorld : IDisposable
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                MoveSpeed = stats.MoveSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints,
+                IsEthereal = state.IsEthereal
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp, now);
             weaponChoices = weaponMilestoneReached
                 ? PrepareWeaponChoicesLocked(state)
                 : BuildWeaponChoiceOptionsLocked(state);
-            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            upgradeOptions = BuildStatUpgradeOptionsLocked(state);
+
+            state.IsEthereal = stats.UnspentStatPoints > 0 || (weaponChoices?.Count > 0);
+            snapshot.IsEthereal = state.IsEthereal;
 
             if (leveledUp && stats.UnspentStatPoints > 0)
             {
@@ -781,12 +825,17 @@ public sealed class GameWorld : IDisposable
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                MoveSpeed = stats.MoveSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints,
+                IsEthereal = playerState.IsEthereal
             };
 
             var abilities = BuildAbilitySnapshotsLocked(playerState, leveledUp: false, now);
-            var upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            var upgradeOptions = BuildStatUpgradeOptionsLocked(playerState);
             var weaponChoices = BuildWeaponChoiceOptionsLocked(playerState);
+
+            playerState.IsEthereal = stats.UnspentStatPoints > 0 || (weaponChoices?.Count > 0);
+            snapshot.IsEthereal = playerState.IsEthereal;
 
             string message;
             if (!string.IsNullOrWhiteSpace(replacedId))
@@ -956,6 +1005,46 @@ public sealed class GameWorld : IDisposable
         }
 
         return list.Count > 0 ? list : null;
+    }
+
+    private List<PlayerStatUpgradeOption>? BuildStatUpgradeOptionsLocked(PlayerState state)
+    {
+        if (state.Stats.UnspentStatPoints <= 0)
+        {
+            state.PendingStatChoices.Clear();
+            return null;
+        }
+
+        if (state.PendingStatChoices.Count == 0)
+        {
+            var pool = new List<PlayerStatUpgradeOption>(StatUpgradeOptions);
+            Shuffle(pool);
+            var pickCount = Math.Min(3, pool.Count);
+            for (var i = 0; i < pickCount; i++)
+            {
+                state.PendingStatChoices.Add(pool[i].Id);
+            }
+        }
+
+        var options = new List<PlayerStatUpgradeOption>(state.PendingStatChoices.Count);
+        foreach (var id in state.PendingStatChoices)
+        {
+            if (StatUpgradeMap.TryGetValue(id, out var option))
+            {
+                options.Add(option);
+            }
+        }
+
+        return options.Count > 0 ? options : null;
+    }
+
+    private static void Shuffle<T>(IList<T> list)
+    {
+        for (var i = list.Count - 1; i > 0; i--)
+        {
+            var j = Random.Shared.Next(i + 1);
+            (list[i], list[j]) = (list[j], list[i]);
+        }
     }
 
     private bool TryCreateAttackInstance(
@@ -1402,6 +1491,8 @@ public sealed class GameWorld : IDisposable
                 return null;
             }
 
+            state.PendingStatChoices.Clear();
+
             snapshot = new PlayerStatsDto
             {
                 Level = stats.Level,
@@ -1411,12 +1502,17 @@ public sealed class GameWorld : IDisposable
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                MoveSpeed = stats.MoveSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints,
+                IsEthereal = state.IsEthereal
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
-            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            upgradeOptions = BuildStatUpgradeOptionsLocked(state);
             weaponChoices = BuildWeaponChoiceOptionsLocked(state);
+
+            state.IsEthereal = stats.UnspentStatPoints > 0 || (weaponChoices?.Count > 0);
+            snapshot.IsEthereal = state.IsEthereal;
         }
 
         return new PlayerStatsUpdate(state, snapshot, 0, false, message, abilities, upgradeOptions, weaponChoices);
@@ -1448,14 +1544,16 @@ public sealed class GameWorld : IDisposable
                 stats.AttackSpeed = Math.Round(Math.Max(0.1, stats.AttackSpeed + 0.1), 2, MidpointRounding.AwayFromZero);
                 message = "Attack speed improved!";
                 break;
+            case "movespeed":
+            case "swiftness":
+                stats.MoveSpeed = Math.Round(stats.MoveSpeed + 1.0, 2, MidpointRounding.AwayFromZero);
+                message = "Move speed increased!";
+                break;
             default:
                 return false;
         }
 
-        if (stats.UnspentStatPoints > 0)
-        {
-            stats.UnspentStatPoints--;
-        }
+        stats.UnspentStatPoints = Math.Max(0, stats.UnspentStatPoints - 1);
 
         return true;
     }
@@ -1468,7 +1566,7 @@ public sealed class GameWorld : IDisposable
 
         var spawnX = 0.0;
         var spawnZ = 0.0;
-        var spawnY = SampleTerrainHeight(spawnX, spawnZ) + 2.0;
+        var spawnY = SampleTerrainHeight(spawnX, spawnZ) + PlayerHeightOffset;
 
         List<WeaponChoiceOption>? weaponChoices;
 
@@ -1491,12 +1589,17 @@ public sealed class GameWorld : IDisposable
                 MaxHealth = state.Stats.MaxHealth,
                 CurrentHealth = state.Stats.CurrentHealth,
                 AttackSpeed = state.Stats.AttackSpeed,
-                UnspentStatPoints = state.Stats.UnspentStatPoints
+                MoveSpeed = state.Stats.MoveSpeed,
+                UnspentStatPoints = state.Stats.UnspentStatPoints,
+                IsEthereal = state.IsEthereal
             };
 
             abilities = BuildAbilitySnapshotsLocked(state, leveledUp: false, now);
-            upgradeOptions = state.Stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            upgradeOptions = BuildStatUpgradeOptionsLocked(state);
             weaponChoices = BuildWeaponChoiceOptionsLocked(state);
+
+            state.IsEthereal = state.Stats.UnspentStatPoints > 0 || (weaponChoices?.Count > 0);
+            snapshot.IsEthereal = state.IsEthereal;
         }
 
         var playerSnapshot = CreatePlayerSnapshot(state);
@@ -1528,12 +1631,17 @@ public sealed class GameWorld : IDisposable
                 MaxHealth = stats.MaxHealth,
                 CurrentHealth = stats.CurrentHealth,
                 AttackSpeed = stats.AttackSpeed,
-                UnspentStatPoints = stats.UnspentStatPoints
+                MoveSpeed = stats.MoveSpeed,
+                UnspentStatPoints = stats.UnspentStatPoints,
+                IsEthereal = state.IsEthereal
             };
 
             reason = defeated ? null : $"{mobName} hit you for {appliedDamage}.";
-            upgradeOptions = stats.UnspentStatPoints > 0 ? StatUpgradeOptions.ToList() : null;
+            upgradeOptions = BuildStatUpgradeOptionsLocked(state);
             weaponChoices = BuildWeaponChoiceOptionsLocked(state);
+
+            state.IsEthereal = stats.UnspentStatPoints > 0 || (weaponChoices?.Count > 0);
+            snapshot.IsEthereal = state.IsEthereal;
         }
 
         var update = new PlayerStatsUpdate(state, snapshot, 0, false, reason, null, upgradeOptions, weaponChoices);
@@ -1599,13 +1707,22 @@ public sealed class GameWorld : IDisposable
         {
             if (_players.TryGetValue(attack.PlayerId, out var playerState))
             {
-                var damageResult = ProcessMobDamage(playerState, attack.Damage, attack.MobName, now);
-                eventArgs.PlayerStatUpdates.Add(damageResult.Update);
-
-                if (damageResult.Defeated)
+                bool isEthereal;
+                lock (playerState)
                 {
-                    var respawn = HandlePlayerDefeat(playerState, attack.MobName, now);
-                    eventArgs.PlayerRespawns.Add(respawn);
+                    isEthereal = playerState.IsEthereal;
+                }
+
+                if (!isEthereal)
+                {
+                    var damageResult = ProcessMobDamage(playerState, attack.Damage, attack.MobName, now);
+                    eventArgs.PlayerStatUpdates.Add(damageResult.Update);
+
+                    if (damageResult.Defeated)
+                    {
+                        var respawn = HandlePlayerDefeat(playerState, attack.MobName, now);
+                        eventArgs.PlayerRespawns.Add(respawn);
+                    }
                 }
             }
 
@@ -1639,7 +1756,8 @@ public sealed class GameWorld : IDisposable
                     state.X,
                     state.Y,
                     state.Z,
-                    state.Stats.CurrentHealth);
+                    state.Stats.CurrentHealth,
+                    state.IsEthereal);
             }
         }
 
@@ -1797,32 +1915,137 @@ public sealed class GameWorld : IDisposable
         return list;
     }
 
-    private double SampleTerrainHeight(double x, double z)
+    private void InitializeTerrainHeightMaps()
     {
-        return LayeredPerlin2D(
-            x,
-            z,
-            _options.TerrainOctaves,
-            _options.TerrainPersistence,
-            _options.TerrainBaseFrequency,
-            _options.TerrainBaseAmplitude);
-    }
-
-    private static double LayeredPerlin2D(double x, double y, int octaves, double persistence, double baseFrequency, double baseAmplitude)
-    {
-        var total = 0.0;
-        var frequency = baseFrequency;
-        var amplitude = baseAmplitude;
-
-        for (var i = 0; i < octaves; i++)
+        var coords = new List<(int X, int Z)>(WalkSize * WalkSize);
+        for (var z = 0; z < WalkSize; z++)
         {
-            var noiseValue = Perlin.Noise2D(x * frequency, y * frequency);
-            total += noiseValue * amplitude;
-            frequency *= 2.0;
-            amplitude *= persistence;
+            if (z % 2 == 0)
+            {
+                for (var x = 0; x < WalkSize; x++)
+                {
+                    coords.Add((x, z));
+                }
+            }
+            else
+            {
+                for (var x = WalkSize - 1; x >= 0; x--)
+                {
+                    coords.Add((x, z));
+                }
+            }
         }
 
-        return total;
+        var rng = new Random(_options.WorldSeed);
+        var current = 0;
+
+        Span<int> candidates = stackalloc int[3];
+        for (var index = 0; index < coords.Count; index++)
+        {
+            var (x, z) = coords[index];
+            _cellLevels[z, x] = current;
+
+            if (index == coords.Count - 1)
+            {
+                break;
+            }
+
+            var candidateCount = 0;
+            for (var delta = -1; delta <= 1; delta++)
+            {
+                var next = current + delta;
+                if (next >= MinWalkDepth && next <= MaxWalkDepth)
+                {
+                    candidates[candidateCount++] = next;
+                }
+            }
+
+            if (candidateCount > 0)
+            {
+                var pickIndex = rng.Next(candidateCount);
+                current = candidates[pickIndex];
+            }
+        }
+
+        for (var vz = 0; vz <= WalkSize; vz++)
+        {
+            for (var vx = 0; vx <= WalkSize; vx++)
+            {
+                var samples = new List<double>(4);
+                if (vx > 0 && vz > 0)
+                {
+                    samples.Add(_cellLevels[vz - 1, vx - 1]);
+                }
+                if (vx > 0 && vz < WalkSize)
+                {
+                    samples.Add(_cellLevels[vz, vx - 1]);
+                }
+                if (vx < WalkSize && vz > 0)
+                {
+                    samples.Add(_cellLevels[vz - 1, vx]);
+                }
+                if (vx < WalkSize && vz < WalkSize)
+                {
+                    samples.Add(_cellLevels[vz, vx]);
+                }
+
+                var average = samples.Count > 0 ? samples.Average() : 0;
+                var quantized = Math.Clamp((int)Math.Round(average), MinWalkDepth, MaxWalkDepth);
+                _vertexLevels[vz, vx] = quantized;
+                _vertexHeights[vz, vx] = quantized * HeightStep;
+            }
+        }
+    }
+
+    public TerrainSnapshot BuildTerrainSnapshot()
+    {
+        var heights = new double[WalkSize + 1][];
+        for (var z = 0; z <= WalkSize; z++)
+        {
+            heights[z] = new double[WalkSize + 1];
+            for (var x = 0; x <= WalkSize; x++)
+            {
+                heights[z][x] = _vertexHeights[z, x];
+            }
+        }
+
+        return new TerrainSnapshot
+        {
+            WalkSize = WalkSize,
+            TileSize = TileSize,
+            HeightStep = HeightStep,
+            MinDepth = MinWalkDepth,
+            MaxDepth = MaxWalkDepth,
+            VertexHeights = heights
+        };
+    }
+
+    private double SampleTerrainHeight(double x, double z)
+    {
+        var gridX = x / TileSize + _vertexOriginOffset;
+        var gridZ = z / TileSize + _vertexOriginOffset;
+
+        if (gridX < 0 || gridX > WalkSize || gridZ < 0 || gridZ > WalkSize)
+        {
+            return 0.0;
+        }
+
+        const double epsilon = 1e-6;
+        var clampedX = Math.Clamp(gridX, 0, WalkSize - epsilon);
+        var clampedZ = Math.Clamp(gridZ, 0, WalkSize - epsilon);
+        var ix = (int)Math.Floor(clampedX);
+        var iz = (int)Math.Floor(clampedZ);
+        var fx = clampedX - ix;
+        var fz = clampedZ - iz;
+
+        var h00 = _vertexHeights[iz, ix];
+        var h10 = _vertexHeights[iz, ix + 1];
+        var h01 = _vertexHeights[iz + 1, ix];
+        var h11 = _vertexHeights[iz + 1, ix + 1];
+
+        var north = h00 * (1 - fx) + h10 * fx;
+        var south = h01 * (1 - fx) + h11 * fx;
+        return north * (1 - fz) + south * fz;
     }
 
     public void Dispose()

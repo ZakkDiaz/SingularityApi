@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 
@@ -27,6 +28,8 @@ public sealed class PlayerState
     public ConcurrentDictionary<string, PlayerAbilityState> Abilities { get; } = new();
     public SortedDictionary<int, string> WeaponLoadout { get; } = new();
     public List<string> PendingWeaponChoices { get; } = new();
+    public List<string> PendingStatChoices { get; } = new();
+    public bool IsEthereal { get; set; }
 }
 
 public sealed class PlayerSnapshot
@@ -51,6 +54,7 @@ public sealed class PlayerStats
     public int MaxHealth { get; set; } = 100;
     public int CurrentHealth { get; set; } = 100;
     public double AttackSpeed { get; set; } = 1.0;
+    public double MoveSpeed { get; set; } = 12.0;
     public int UnspentStatPoints { get; set; }
 }
 
@@ -63,7 +67,9 @@ public sealed class PlayerStatsDto
     public int MaxHealth { get; set; }
     public int CurrentHealth { get; set; }
     public double AttackSpeed { get; set; }
+    public double MoveSpeed { get; set; }
     public int UnspentStatPoints { get; set; }
+    public bool IsEthereal { get; set; }
 }
 
 public sealed class PlayerAbilityState
@@ -119,4 +125,14 @@ public sealed class PlayerStatUpgradeOption
     public string Id { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
     public string Description { get; init; } = string.Empty;
+}
+
+public sealed class TerrainSnapshot
+{
+    public int WalkSize { get; init; }
+    public double TileSize { get; init; }
+    public double HeightStep { get; init; }
+    public int MinDepth { get; init; }
+    public int MaxDepth { get; init; }
+    public double[][] VertexHeights { get; init; } = Array.Empty<double[]>();
 }

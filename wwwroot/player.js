@@ -1,4 +1,5 @@
 import { getAbilityDefaults } from './abilities.js';
+import { PLAYER_HEIGHT_OFFSET } from './world.js';
 
 const KEY_BINDINGS = {
     KeyW: { axis: 'z', value: -1 },
@@ -19,26 +20,44 @@ export class Player {
         this.world = world;
         this.network = network;
         this.playerId = null;
-        this.position = { x: 0, y: 1.6, z: 0 };
+        this.position = { x: 0, y: PLAYER_HEIGHT_OFFSET, z: 0 };
         this.velocity = { x: 0, z: 0 };
         this.heading = 0;
-        this.speed = 7;
+        this.baseMoveSpeed = 12;
+        this.moveSpeed = this.baseMoveSpeed;
+        this.verticalVelocity = 0;
+        this.jumpVelocity = 16;
+        this.gravity = -36;
+        this.isGrounded = true;
+        this.jumpRequested = false;
+        this.isEthereal = false;
+        this.menuStates = new Map();
         this.keys = new Map();
         this.lastUpdateTime = performance.now();
         this.lastSentTime = 0;
-        this.lastSentSnapshot = { x: 0, y: 1.6, z: 0, heading: 0 };
+        this.lastSentSnapshot = { x: 0, y: PLAYER_HEIGHT_OFFSET, z: 0, heading: 0 };
 
         this.abilities = new Map();
         this.abilityRanges = new Map();
         this.primaryAbilityId = null;
         this.debugInfo = this.createDebugInfo();
-        this.stats = { attackSpeed: 1, unspentStatPoints: 0 };
+        this.stats = { attackSpeed: 1, moveSpeed: this.baseMoveSpeed, unspentStatPoints: 0, isEthereal: false };
 
         this.initInputListeners();
+        this.world.setHeadingListener?.((heading) => this.setHeadingFromCamera(heading));
+        const initialGround = this.world.getGroundHeight(0, 0) + PLAYER_HEIGHT_OFFSET;
+        this.position.y = initialGround;
+        this.lastSentSnapshot = { x: this.position.x, y: this.position.y, z: this.position.z, heading: this.heading };
+        this.world.updateLocalPlayer({ x: this.position.x, y: this.position.y, z: this.position.z, heading: this.heading });
     }
 
     initInputListeners() {
         window.addEventListener('keydown', (evt) => {
+            if (evt.code === 'Space') {
+                evt.preventDefault();
+                this.jumpRequested = true;
+                return;
+            }
             const binding = KEY_BINDINGS[evt.code];
             if (binding) {
                 evt.preventDefault();
@@ -47,11 +66,35 @@ export class Player {
         });
 
         window.addEventListener('keyup', (evt) => {
+            if (evt.code === 'Space') {
+                this.jumpRequested = false;
+                return;
+            }
             const binding = KEY_BINDINGS[evt.code];
             if (binding) {
                 this.keys.delete(binding.axis);
             }
         });
+    }
+
+    setMenuState(id, isOpen) {
+        if (!id) {
+            return;
+        }
+        if (isOpen) {
+            this.menuStates.set(id, true);
+        } else {
+            this.menuStates.delete(id);
+        }
+        this.updateControlSuspension();
+    }
+
+    updateControlSuspension() {
+        const menuOpen = this.menuStates.size > 0;
+        const shouldSuspend = menuOpen || this.isEthereal;
+        if (typeof this.world?.setControlSuspended === 'function') {
+            this.world.setControlSuspended(shouldSuspend);
+        }
     }
 
     setPlayerId(id) {
@@ -63,30 +106,91 @@ export class Player {
         const delta = Math.min((now - this.lastUpdateTime) / 1000, 0.05);
         this.lastUpdateTime = now;
 
-        const moveX = this.keys.get('x') ?? 0;
-        const moveZ = this.keys.get('z') ?? 0;
-        const magnitude = Math.hypot(moveX, moveZ);
-
-        if (magnitude > 0) {
-            const normX = moveX / magnitude;
-            const normZ = moveZ / magnitude;
-            this.velocity.x = normX * this.speed;
-            this.velocity.z = normZ * this.speed;
-            this.heading = Math.atan2(this.velocity.x, this.velocity.z);
-        } else {
+        if (this.isEthereal) {
             this.velocity.x = 0;
             this.velocity.z = 0;
+            this.jumpRequested = false;
+        } else {
+            const moveX = this.keys.get('x') ?? 0;
+            const moveZ = this.keys.get('z') ?? 0;
+            const magnitude = Math.hypot(moveX, moveZ);
+
+            if (magnitude > 0) {
+                const normX = moveX / magnitude;
+                const normZ = moveZ / magnitude;
+                const yaw = this.heading;
+                const sinYaw = Math.sin(yaw);
+                const cosYaw = Math.cos(yaw);
+                const forwardX = sinYaw;
+                const forwardZ = cosYaw;
+                const rightX = cosYaw;
+                const rightZ = -sinYaw;
+                let dirX = forwardX * normZ + rightX * normX;
+                let dirZ = forwardZ * normZ + rightZ * normX;
+                const dirMagnitude = Math.hypot(dirX, dirZ) || 1;
+                dirX /= dirMagnitude;
+                dirZ /= dirMagnitude;
+                const moveSpeed = Math.max(0.1, this.moveSpeed ?? this.baseMoveSpeed);
+                this.velocity.x = dirX * moveSpeed;
+                this.velocity.z = dirZ * moveSpeed;
+            } else {
+                this.velocity.x = 0;
+                this.velocity.z = 0;
+            }
+
+            this.position.x += this.velocity.x * delta;
+            this.position.z += this.velocity.z * delta;
         }
 
-        this.position.x += this.velocity.x * delta;
-        this.position.z += this.velocity.z * delta;
+        if (this.isEthereal) {
+            this.verticalVelocity = 0;
+        } else {
+            if (this.jumpRequested && this.isGrounded) {
+                this.verticalVelocity = this.jumpVelocity;
+                this.isGrounded = false;
+                this.jumpRequested = false;
+            }
 
-        this.world.updateLocalPlayer(this.position.x, this.position.z, this.heading);
+            this.verticalVelocity += this.gravity * delta;
+            this.position.y += this.verticalVelocity * delta;
+        }
+
+        const groundY = this.world.getGroundHeight(this.position.x, this.position.z) + PLAYER_HEIGHT_OFFSET;
+        if (this.isEthereal) {
+            this.position.y = groundY;
+            this.verticalVelocity = 0;
+            this.isGrounded = true;
+        } else if (this.position.y <= groundY) {
+            this.position.y = groundY;
+            if (this.verticalVelocity < 0) {
+                this.verticalVelocity = 0;
+            }
+            this.isGrounded = true;
+        } else {
+            this.isGrounded = false;
+        }
+
+        this.world.updateLocalPlayer({
+            x: this.position.x,
+            y: this.position.y,
+            z: this.position.z,
+            heading: this.heading
+        });
         this.updateAbilityCooldowns(now);
         this.tryAutoAbilities(now);
     }
 
+    setHeadingFromCamera(heading) {
+        this.heading = heading;
+        this.world.setCameraYaw?.(heading);
+    }
+
     tryAutoAbilities(now) {
+        if (this.isEthereal) {
+            this.world.setHighlightedMob(null);
+            this.debugInfo = this.createDebugInfo();
+            return;
+        }
         const nearest = this.world.findNearestMob(this.position, Infinity);
         const debugBase = {
             nearestMobId: nearest?.id ?? null,
@@ -207,14 +311,28 @@ export class Player {
     setStats(stats = {}) {
         const attackSpeed = typeof stats.attackSpeed === 'number' ? stats.attackSpeed : (this.stats?.attackSpeed ?? 1);
         const unspent = typeof stats.unspentStatPoints === 'number' ? stats.unspentStatPoints : (this.stats?.unspentStatPoints ?? 0);
+        const moveSpeed = typeof stats.moveSpeed === 'number' ? stats.moveSpeed : (this.stats?.moveSpeed ?? this.baseMoveSpeed);
+        const isEthereal = Boolean(stats.isEthereal ?? stats.ethereal ?? false);
+        this.moveSpeed = moveSpeed;
         this.stats = {
             attackSpeed,
-            unspentStatPoints: unspent
+            moveSpeed,
+            unspentStatPoints: unspent,
+            isEthereal
         };
+        if (this.isEthereal !== isEthereal) {
+            this.isEthereal = isEthereal;
+            this.updateControlSuspension();
+        } else {
+            this.isEthereal = isEthereal;
+        }
     }
 
     sendMovementToServerIfNeeded() {
         const now = performance.now();
+        if (this.isEthereal) {
+            return;
+        }
         if (now - this.lastSentTime < NETWORK_SEND_INTERVAL_MS) {
             return;
         }
@@ -236,6 +354,7 @@ export class Player {
             z: this.position.z,
             heading: this.heading,
             velocityX: this.velocity.x,
+            velocityY: this.verticalVelocity,
             velocityZ: this.velocity.z
         });
 
@@ -253,9 +372,24 @@ export class Player {
             return;
         }
         this.position.x = snapshot.x ?? this.position.x;
+        this.position.y = typeof snapshot.y === 'number' ? snapshot.y : this.position.y;
         this.position.z = snapshot.z ?? this.position.z;
-        this.heading = snapshot.heading ?? this.heading;
-        this.world.updateLocalPlayer(this.position.x, this.position.z, this.heading);
+        if (typeof snapshot.heading === 'number') {
+            this.heading = snapshot.heading;
+            this.world.setCameraYaw?.(this.heading);
+        }
+        this.lastSentSnapshot = {
+            x: this.position.x,
+            y: this.position.y,
+            z: this.position.z,
+            heading: this.heading
+        };
+        this.world.updateLocalPlayer({
+            x: this.position.x,
+            y: this.position.y,
+            z: this.position.z,
+            heading: this.heading
+        });
     }
 
     setAbilitySnapshots(snapshots = []) {
