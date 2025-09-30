@@ -804,4 +804,11 @@ export class World {
         const south = h01 * (1 - fx) + h11 * fx;
         return north * (1 - fz) + south * fz;
     }
+
+    getMaxStepHeight() {
+        const base = (typeof this.heightStep === 'number' && this.heightStep > 0)
+            ? this.heightStep
+            : DEFAULT_HEIGHT_STEP;
+        return Math.max(0.1, base * 0.75);
+    }
 }

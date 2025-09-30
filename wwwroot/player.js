@@ -2,15 +2,34 @@ import { getAbilityDefaults } from './abilities.js';
 import { PLAYER_HEIGHT_OFFSET } from './world.js';
 
 const KEY_BINDINGS = {
-    KeyW: { axis: 'z', value: -1 },
-    ArrowUp: { axis: 'z', value: -1 },
-    KeyS: { axis: 'z', value: 1 },
-    ArrowDown: { axis: 'z', value: 1 },
-    KeyA: { axis: 'x', value: -1 },
-    ArrowLeft: { axis: 'x', value: -1 },
-    KeyD: { axis: 'x', value: 1 },
-    ArrowRight: { axis: 'x', value: 1 }
+    KeyW: { axis: 'forward', value: 1 },
+    ArrowUp: { axis: 'forward', value: 1 },
+    KeyS: { axis: 'forward', value: -1 },
+    ArrowDown: { axis: 'forward', value: -1 },
+    KeyQ: { axis: 'strafe', value: -1 },
+    KeyE: { axis: 'strafe', value: 1 },
+    KeyA: { axis: 'turn', value: -1 },
+    ArrowLeft: { axis: 'turn', value: -1 },
+    KeyD: { axis: 'turn', value: 1 },
+    ArrowRight: { axis: 'turn', value: 1 }
 };
+
+const TURN_SPEED_RADIANS = 2.6;
+const DEFAULT_MAX_STEP_HEIGHT = 12;
+const TWO_PI = Math.PI * 2;
+
+function normalizeAngle(angle) {
+    if (!Number.isFinite(angle)) {
+        return 0;
+    }
+    let normalized = angle % TWO_PI;
+    if (normalized <= -Math.PI) {
+        normalized += TWO_PI;
+    } else if (normalized > Math.PI) {
+        normalized -= TWO_PI;
+    }
+    return normalized;
+}
 
 const NETWORK_SEND_INTERVAL_MS = 120;
 const MIN_MOVEMENT_DELTA = 0.05;
@@ -32,7 +51,7 @@ export class Player {
         this.jumpRequested = false;
         this.isEthereal = false;
         this.menuStates = new Map();
-        this.keys = new Map();
+        this.activeBindings = new Map();
         this.lastUpdateTime = performance.now();
         this.lastSentTime = 0;
         this.lastSentSnapshot = { x: 0, y: PLAYER_HEIGHT_OFFSET, z: 0, heading: 0 };
@@ -42,6 +61,8 @@ export class Player {
         this.primaryAbilityId = null;
         this.debugInfo = this.createDebugInfo();
         this.stats = { attackSpeed: 1, moveSpeed: this.baseMoveSpeed, unspentStatPoints: 0, isEthereal: false };
+        this.turnSpeed = TURN_SPEED_RADIANS;
+        this.maxStepHeight = Math.max(0.1, this.world?.getMaxStepHeight?.() ?? DEFAULT_MAX_STEP_HEIGHT);
 
         this.initInputListeners();
         this.world.setHeadingListener?.((heading) => this.setHeadingFromCamera(heading));
@@ -61,7 +82,10 @@ export class Player {
             const binding = KEY_BINDINGS[evt.code];
             if (binding) {
                 evt.preventDefault();
-                this.keys.set(binding.axis, binding.value);
+                if (evt.repeat && this.activeBindings.has(evt.code)) {
+                    return;
+                }
+                this.activeBindings.set(evt.code, binding);
             }
         });
 
@@ -72,7 +96,7 @@ export class Player {
             }
             const binding = KEY_BINDINGS[evt.code];
             if (binding) {
-                this.keys.delete(binding.axis);
+                this.activeBindings.delete(evt.code);
             }
         });
     }
@@ -101,23 +125,49 @@ export class Player {
         this.playerId = id;
     }
 
+    getAxisValue(axis) {
+        let value = 0;
+        for (const binding of this.activeBindings.values()) {
+            if (binding.axis === axis) {
+                value += binding.value;
+            }
+        }
+        if (!Number.isFinite(value)) {
+            return 0;
+        }
+        return Math.max(-1, Math.min(1, value));
+    }
+
     update() {
         const now = performance.now();
         const delta = Math.min((now - this.lastUpdateTime) / 1000, 0.05);
         this.lastUpdateTime = now;
+        const startX = this.position.x;
+        const startZ = this.position.z;
 
         if (this.isEthereal) {
-            this.velocity.x = 0;
-            this.velocity.z = 0;
             this.jumpRequested = false;
         } else {
-            const moveX = this.keys.get('x') ?? 0;
-            const moveZ = this.keys.get('z') ?? 0;
-            const magnitude = Math.hypot(moveX, moveZ);
+            const stepFromWorld = this.world?.getMaxStepHeight?.();
+            if (typeof stepFromWorld === 'number' && Number.isFinite(stepFromWorld) && stepFromWorld > 0) {
+                this.maxStepHeight = stepFromWorld;
+            }
+
+            const turnInput = this.getAxisValue('turn');
+            if (turnInput !== 0 && delta > 0) {
+                this.heading = normalizeAngle(this.heading + turnInput * this.turnSpeed * delta);
+                this.world.setCameraYaw?.(this.heading);
+            }
+
+            const forwardInput = this.getAxisValue('forward');
+            const strafeInput = this.getAxisValue('strafe');
+            let desiredVelX = 0;
+            let desiredVelZ = 0;
+            const magnitude = Math.hypot(strafeInput, forwardInput);
 
             if (magnitude > 0) {
-                const normX = moveX / magnitude;
-                const normZ = moveZ / magnitude;
+                const normForward = forwardInput / magnitude;
+                const normStrafe = strafeInput / magnitude;
                 const yaw = this.heading;
                 const sinYaw = Math.sin(yaw);
                 const cosYaw = Math.cos(yaw);
@@ -125,21 +175,16 @@ export class Player {
                 const forwardZ = cosYaw;
                 const rightX = cosYaw;
                 const rightZ = -sinYaw;
-                let dirX = forwardX * normZ + rightX * normX;
-                let dirZ = forwardZ * normZ + rightZ * normX;
-                const dirMagnitude = Math.hypot(dirX, dirZ) || 1;
-                dirX /= dirMagnitude;
-                dirZ /= dirMagnitude;
                 const moveSpeed = Math.max(0.1, this.moveSpeed ?? this.baseMoveSpeed);
-                this.velocity.x = dirX * moveSpeed;
-                this.velocity.z = dirZ * moveSpeed;
-            } else {
-                this.velocity.x = 0;
-                this.velocity.z = 0;
+                const dirX = forwardX * normForward + rightX * normStrafe;
+                const dirZ = forwardZ * normForward + rightZ * normStrafe;
+                desiredVelX = dirX * moveSpeed;
+                desiredVelZ = dirZ * moveSpeed;
             }
 
-            this.position.x += this.velocity.x * delta;
-            this.position.z += this.velocity.z * delta;
+            const resolved = this.resolveMovement(desiredVelX, desiredVelZ, delta);
+            this.position.x = resolved.x;
+            this.position.z = resolved.z;
         }
 
         if (this.isEthereal) {
@@ -170,6 +215,18 @@ export class Player {
             this.isGrounded = false;
         }
 
+        const deltaX = this.position.x - startX;
+        const deltaZ = this.position.z - startZ;
+        if (this.isEthereal || delta <= 0) {
+            this.velocity.x = 0;
+            this.velocity.z = 0;
+        } else {
+            const velX = deltaX / delta;
+            const velZ = deltaZ / delta;
+            this.velocity.x = Number.isFinite(velX) ? velX : 0;
+            this.velocity.z = Number.isFinite(velZ) ? velZ : 0;
+        }
+
         this.world.updateLocalPlayer({
             x: this.position.x,
             y: this.position.y,
@@ -180,9 +237,80 @@ export class Player {
         this.tryAutoAbilities(now);
     }
 
+    resolveMovement(desiredVelX, desiredVelZ, delta) {
+        const startX = this.position.x;
+        const startZ = this.position.z;
+        if (!this.world || typeof this.world.getGroundHeight !== 'function' || delta <= 0) {
+            return {
+                x: startX + (Number.isFinite(desiredVelX) ? desiredVelX : 0) * delta,
+                z: startZ + (Number.isFinite(desiredVelZ) ? desiredVelZ : 0) * delta
+            };
+        }
+
+        const velX = Number.isFinite(desiredVelX) ? desiredVelX : 0;
+        const velZ = Number.isFinite(desiredVelZ) ? desiredVelZ : 0;
+        const dx = velX * delta;
+        const dz = velZ * delta;
+
+        if (Math.abs(dx) < 1e-6 && Math.abs(dz) < 1e-6) {
+            return { x: startX, z: startZ };
+        }
+
+        const currentGround = this.world.getGroundHeight(startX, startZ);
+        const candidateX = startX + dx;
+        const candidateZ = startZ + dz;
+        const candidateGround = this.world.getGroundHeight(candidateX, candidateZ);
+
+        if (Math.abs(candidateGround - currentGround) <= this.maxStepHeight) {
+            return { x: candidateX, z: candidateZ };
+        }
+
+        return this.resolveTerrainStep(startX, startZ, dx, dz, currentGround);
+    }
+
+    resolveTerrainStep(startX, startZ, dx, dz, currentGround) {
+        if (!this.world || typeof this.world.getGroundHeight !== 'function') {
+            return { x: startX, z: startZ };
+        }
+
+        const distance = Math.hypot(dx, dz);
+        if (distance <= 1e-6) {
+            return { x: startX, z: startZ };
+        }
+
+        let low = 0;
+        let high = 1;
+        let best = 0;
+        for (let i = 0; i < 6; i++) {
+            const mid = (low + high) * 0.5;
+            const testX = startX + dx * mid;
+            const testZ = startZ + dz * mid;
+            const testGround = this.world.getGroundHeight(testX, testZ);
+            if (Math.abs(testGround - currentGround) <= this.maxStepHeight) {
+                best = mid;
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+
+        if (best <= 0.001) {
+            return { x: startX, z: startZ };
+        }
+
+        const finalX = startX + dx * best;
+        const finalZ = startZ + dz * best;
+        const finalGround = this.world.getGroundHeight(finalX, finalZ);
+        if (Math.abs(finalGround - currentGround) > this.maxStepHeight + 0.01) {
+            return { x: startX, z: startZ };
+        }
+
+        return { x: finalX, z: finalZ };
+    }
+
     setHeadingFromCamera(heading) {
-        this.heading = heading;
-        this.world.setCameraYaw?.(heading);
+        this.heading = normalizeAngle(heading);
+        this.world.setCameraYaw?.(this.heading);
     }
 
     tryAutoAbilities(now) {
