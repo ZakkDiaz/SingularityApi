@@ -2,11 +2,11 @@
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
 
-const WALK_SIZE = 10;
-const TILE_SIZE = 40; // base horizontal span per cell (already scaled up)
-const HEIGHT_STEP = TILE_SIZE * 0.5; // elevation delta between consecutive steps
-const MIN_WALK_DEPTH = -4;
-const MAX_WALK_DEPTH = 5;
+const DEFAULT_WALK_SIZE = 10;
+const DEFAULT_TILE_SIZE = 40; // base horizontal span per cell (already scaled up)
+const DEFAULT_HEIGHT_STEP = DEFAULT_TILE_SIZE * 0.5; // elevation delta between consecutive steps
+const DEFAULT_MIN_WALK_DEPTH = -4;
+const DEFAULT_MAX_WALK_DEPTH = 5;
 export const PLAYER_HEIGHT_OFFSET = 1.4;
 const MOB_HEIGHT_OFFSET = 1.2;
 const ATTACK_HEIGHT = 0.2;
@@ -15,10 +15,6 @@ const MOB_FLASH_DURATION_MS = 250;
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
-}
-
-function choice(options) {
-    return options[Math.floor(Math.random() * options.length)];
 }
 
 export class World {
@@ -63,13 +59,17 @@ export class World {
         this.maxCameraDistance = 80;
         this.headingListener = null;
         this.pointerLocked = false;
+        this.controlSuspended = false;
+        this.pointerLockDesired = true;
 
-        this.cellOriginOffset = (WALK_SIZE - 1) / 2;
-        this.vertexOriginOffset = WALK_SIZE / 2;
-        const heightData = this.generateTerrainHeightMaps();
-        this.cellHeights = heightData.cellLevels;
-        this.vertexLevels = heightData.vertexLevels;
-        this.vertexHeights = heightData.vertexHeights;
+        this.walkSize = DEFAULT_WALK_SIZE;
+        this.tileSize = DEFAULT_TILE_SIZE;
+        this.heightStep = DEFAULT_HEIGHT_STEP;
+        this.minDepth = DEFAULT_MIN_WALK_DEPTH;
+        this.maxDepth = DEFAULT_MAX_WALK_DEPTH;
+        this.vertexOriginOffset = this.walkSize / 2;
+        this.vertexLevels = Array.from({ length: this.walkSize + 1 }, () => Array(this.walkSize + 1).fill(0));
+        this.vertexHeights = Array.from({ length: this.walkSize + 1 }, () => Array(this.walkSize + 1).fill(0));
         this.walkMesh = this.buildTerrainMesh();
         this.scene.add(this.walkMesh);
 
@@ -115,6 +115,10 @@ export class World {
         }
 
         canvas.addEventListener('click', () => {
+            if (this.controlSuspended) {
+                return;
+            }
+            this.pointerLockDesired = true;
             if (canvas.requestPointerLock) {
                 canvas.requestPointerLock();
             }
@@ -122,10 +126,13 @@ export class World {
 
         document.addEventListener('pointerlockchange', () => {
             this.pointerLocked = document.pointerLockElement === canvas;
+            if (!this.pointerLocked && !this.controlSuspended) {
+                this.pointerLockDesired = false;
+            }
         });
 
         document.addEventListener('mousemove', (event) => {
-            if (!this.pointerLocked) {
+            if (!this.pointerLocked || this.controlSuspended) {
                 return;
             }
             const yawDelta = (event.movementX ?? 0) * 0.0025;
@@ -139,6 +146,9 @@ export class World {
 
         canvas.addEventListener('wheel', (event) => {
             event.preventDefault();
+            if (this.controlSuspended) {
+                return;
+            }
             const delta = (event.deltaY ?? 0) * 0.05;
             this.cameraDistance = clamp(this.cameraDistance + delta, this.minCameraDistance, this.maxCameraDistance);
         }, { passive: false });
@@ -152,91 +162,41 @@ export class World {
         this.cameraYaw = yaw;
     }
 
-    generateTerrainHeightMaps() {
-        const coords = [];
-        for (let z = 0; z < WALK_SIZE; z++) {
-            if (z % 2 === 0) {
-                for (let x = 0; x < WALK_SIZE; x++) {
-                    coords.push({ x, z });
-                }
-            } else {
-                for (let x = WALK_SIZE - 1; x >= 0; x--) {
-                    coords.push({ x, z });
-                }
-            }
-        }
-
-        const sequenceLength = coords.length;
-        const heightSequence = new Array(sequenceLength);
-        let current = 0;
-        for (let index = 0; index < sequenceLength; index++) {
-            heightSequence[index] = current;
-            if (index === sequenceLength - 1) {
-                break;
-            }
-            const deltas = [-1, 0, 1]
-                .map(delta => current + delta)
-                .filter(next => next >= MIN_WALK_DEPTH && next <= MAX_WALK_DEPTH);
-            current = choice(deltas);
-        }
-
-        const cellLevels = Array.from({ length: WALK_SIZE }, () => Array(WALK_SIZE).fill(0));
-        for (let index = 0; index < sequenceLength; index++) {
-            const { x, z } = coords[index];
-            cellLevels[z][x] = heightSequence[index];
-        }
-
-        const vertexLevels = Array.from({ length: WALK_SIZE + 1 }, () => Array(WALK_SIZE + 1).fill(0));
-        for (let vz = 0; vz <= WALK_SIZE; vz++) {
-            for (let vx = 0; vx <= WALK_SIZE; vx++) {
-                const samples = [];
-                if (vx > 0 && vz > 0) samples.push(cellLevels[vz - 1]?.[vx - 1]);
-                if (vx > 0 && vz < WALK_SIZE) samples.push(cellLevels[vz]?.[vx - 1]);
-                if (vx < WALK_SIZE && vz > 0) samples.push(cellLevels[vz - 1]?.[vx]);
-                if (vx < WALK_SIZE && vz < WALK_SIZE) samples.push(cellLevels[vz]?.[vx]);
-
-                const validSamples = samples.filter(sample => sample !== undefined && sample !== null);
-                const average = validSamples.length > 0
-                    ? validSamples.reduce((sum, value) => sum + value, 0) / validSamples.length
-                    : 0;
-                const quantized = Math.round(average);
-                vertexLevels[vz][vx] = clamp(quantized, MIN_WALK_DEPTH, MAX_WALK_DEPTH);
-            }
-        }
-
-        const vertexHeights = vertexLevels.map(row => row.map(level => level * HEIGHT_STEP));
-        return { cellLevels, vertexLevels, vertexHeights };
-    }
-
     buildTerrainMesh() {
-        const vertexCountPerAxis = WALK_SIZE + 1;
+        const walkSize = Math.max(1, Math.round(this.walkSize || DEFAULT_WALK_SIZE));
+        const vertexCountPerAxis = walkSize + 1;
         const positions = [];
         const indices = [];
         const colors = [];
         const uvs = [];
         const color = new THREE.Color();
-        const minLevel = MIN_WALK_DEPTH;
-        const maxLevel = MAX_WALK_DEPTH;
+        const minLevel = this.minDepth ?? DEFAULT_MIN_WALK_DEPTH;
+        const maxLevel = this.maxDepth ?? DEFAULT_MAX_WALK_DEPTH;
         const levelSpan = Math.max(maxLevel - minLevel, 1);
+        const tileSize = this.tileSize ?? DEFAULT_TILE_SIZE;
+        const originOffset = this.vertexOriginOffset ?? (walkSize / 2);
+        const levels = this.vertexLevels ?? [];
+        const heights = this.vertexHeights ?? [];
+        const uvDenominator = Math.max(1, walkSize);
 
         for (let vz = 0; vz < vertexCountPerAxis; vz++) {
             for (let vx = 0; vx < vertexCountPerAxis; vx++) {
-                const level = this.vertexLevels[vz][vx];
-                const height = this.vertexHeights[vz][vx];
-                const worldX = (vx - this.vertexOriginOffset) * TILE_SIZE;
-                const worldZ = (vz - this.vertexOriginOffset) * TILE_SIZE;
+                const level = levels?.[vz]?.[vx] ?? 0;
+                const height = heights?.[vz]?.[vx] ?? 0;
+                const worldX = (vx - originOffset) * tileSize;
+                const worldZ = (vz - originOffset) * tileSize;
                 positions.push(worldX, height, worldZ);
 
                 const t = (level - minLevel) / levelSpan;
                 color.setHSL(clamp(0.55 - t * 0.18, 0.38, 0.68), 0.5, clamp(0.25 + t * 0.35, 0.2, 0.65));
                 colors.push(color.r, color.g, color.b);
 
-                uvs.push(vx / WALK_SIZE, vz / WALK_SIZE);
+                uvs.push(vx / uvDenominator, vz / uvDenominator);
             }
         }
 
-        for (let z = 0; z < WALK_SIZE; z++) {
-            for (let x = 0; x < WALK_SIZE; x++) {
+        for (let z = 0; z < walkSize; z++) {
+            for (let x = 0; x < walkSize; x++) {
                 const topLeft = z * vertexCountPerAxis + x;
                 const topRight = topLeft + 1;
                 const bottomLeft = (z + 1) * vertexCountPerAxis + x;
@@ -263,9 +223,130 @@ export class World {
 
         const mesh = new THREE.Mesh(geometry, material);
         mesh.castShadow = false;
-        mesh.receiveShadow = true;
+       mesh.receiveShadow = true;
         mesh.name = 'terrain';
         return mesh;
+    }
+
+    refreshTerrainMesh() {
+        if (this.walkMesh) {
+            this.scene.remove(this.walkMesh);
+            this.walkMesh.geometry?.dispose?.();
+            const mat = this.walkMesh.material;
+            if (Array.isArray(mat)) {
+                mat.forEach(m => m?.dispose?.());
+            } else {
+                mat?.dispose?.();
+            }
+        }
+        this.walkMesh = this.buildTerrainMesh();
+        this.scene.add(this.walkMesh);
+    }
+
+    requestPointerLockIfPossible() {
+        if (this.controlSuspended) {
+            return;
+        }
+        const canvas = this.renderer?.domElement;
+        if (!canvas || document.pointerLockElement === canvas) {
+            return;
+        }
+        if (canvas.requestPointerLock) {
+            canvas.requestPointerLock();
+        }
+    }
+
+    setControlSuspended(suspended) {
+        const shouldSuspend = Boolean(suspended);
+        if (this.controlSuspended === shouldSuspend) {
+            if (!shouldSuspend && this.pointerLockDesired && !this.pointerLocked) {
+                window.setTimeout(() => this.requestPointerLockIfPossible(), 50);
+            }
+            return;
+        }
+
+        this.controlSuspended = shouldSuspend;
+        if (shouldSuspend) {
+            this.pointerLockDesired = false;
+            if (document.pointerLockElement === this.renderer?.domElement) {
+                document.exitPointerLock?.();
+            }
+            if (document?.body) {
+                document.body.style.cursor = 'default';
+            }
+        } else {
+            this.pointerLockDesired = true;
+            window.setTimeout(() => this.requestPointerLockIfPossible(), 50);
+            if (document?.body) {
+                document.body.style.cursor = '';
+            }
+        }
+    }
+
+    applyTerrainSnapshot(snapshot = {}) {
+        if (!snapshot || !Array.isArray(snapshot.vertexHeights)) {
+            return;
+        }
+
+        const walkSize = typeof snapshot.walkSize === 'number' ? Math.max(1, Math.round(snapshot.walkSize)) : this.walkSize;
+        const tileSize = typeof snapshot.tileSize === 'number' ? snapshot.tileSize : this.tileSize;
+        const heightStep = typeof snapshot.heightStep === 'number' ? snapshot.heightStep : (tileSize * 0.5);
+        const minDepth = typeof snapshot.minDepth === 'number' ? snapshot.minDepth : this.minDepth;
+        const maxDepth = typeof snapshot.maxDepth === 'number' ? snapshot.maxDepth : this.maxDepth;
+
+        this.walkSize = walkSize;
+        this.tileSize = tileSize;
+        this.heightStep = heightStep;
+        this.minDepth = minDepth;
+        this.maxDepth = maxDepth;
+        this.vertexOriginOffset = this.walkSize / 2;
+
+        this.vertexHeights = Array.from({ length: this.walkSize + 1 }, (_, vz) => {
+            const row = snapshot.vertexHeights?.[vz] ?? [];
+            return Array.from({ length: this.walkSize + 1 }, (_, vx) => {
+                const value = typeof row?.[vx] === 'number' ? row[vx] : 0;
+                return value;
+            });
+        });
+
+        this.vertexLevels = this.vertexHeights.map(row => row.map(height => {
+            if (!Number.isFinite(height) || this.heightStep === 0) {
+                return 0;
+            }
+            const level = Math.round(height / this.heightStep);
+            return clamp(level, this.minDepth, this.maxDepth);
+        }));
+
+        this.refreshTerrainMesh();
+
+        if (this.localPlayer) {
+            this.updateLocalPlayer(this.localPlayer);
+        }
+
+        for (const entry of this.remotePlayers.values()) {
+            if (entry?.mesh) {
+                const { x, z } = entry.mesh.position;
+                const groundY = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
+                const offset = typeof entry.heightOffset === 'number' ? Math.max(0, entry.heightOffset) : 0;
+                entry.mesh.position.y = groundY + offset;
+            }
+        }
+
+        for (const entry of this.mobs.values()) {
+            if (entry?.mesh) {
+                const x = entry.x ?? entry.mesh.position.x;
+                const z = entry.z ?? entry.mesh.position.z;
+                const y = this.getGroundHeight(x, z) + MOB_HEIGHT_OFFSET;
+                entry.mesh.position.y = y;
+            }
+        }
+
+        for (const attack of this.attacks.values()) {
+            if (attack?.mesh && attack.mesh.visible) {
+                const { x, z } = attack.mesh.position;
+                attack.mesh.position.y = this.getGroundHeight(x, z) + ATTACK_HEIGHT;
+            }
+        }
     }
 
     createPlayerMesh(baseColor) {
@@ -375,7 +456,7 @@ export class World {
         if (!entry) {
             const mesh = this.createPlayerMesh(0x4695ff);
             this.scene.add(mesh);
-            entry = { mesh, name: snapshot.displayName ?? snapshot.playerId };
+            entry = { mesh, name: snapshot.displayName ?? snapshot.playerId, heightOffset: 0 };
             this.remotePlayers.set(snapshot.playerId, entry);
         }
 
@@ -384,8 +465,11 @@ export class World {
         const x = snapshot.x ?? 0;
         const z = snapshot.z ?? 0;
         const heading = snapshot.heading ?? 0;
-        const y = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
-        entry.mesh.position.set(x, y, z);
+        const groundY = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
+        const serverY = typeof snapshot.y === 'number' ? snapshot.y : null;
+        const offset = serverY !== null ? Math.max(0, serverY - groundY) : 0;
+        entry.heightOffset = offset;
+        entry.mesh.position.set(x, groundY + offset, z);
         entry.mesh.rotation.y = heading;
     }
 
@@ -693,24 +777,28 @@ export class World {
     }
 
     getGroundHeight(x, z) {
-        const gridX = x / TILE_SIZE + this.vertexOriginOffset;
-        const gridZ = z / TILE_SIZE + this.vertexOriginOffset;
-        if (gridX < 0 || gridX > WALK_SIZE || gridZ < 0 || gridZ > WALK_SIZE) {
+        const tileSize = this.tileSize ?? DEFAULT_TILE_SIZE;
+        const walkSize = this.walkSize ?? DEFAULT_WALK_SIZE;
+        const originOffset = this.vertexOriginOffset ?? (walkSize / 2);
+        const gridX = x / tileSize + originOffset;
+        const gridZ = z / tileSize + originOffset;
+        if (gridX < 0 || gridX > walkSize || gridZ < 0 || gridZ > walkSize) {
             return 0;
         }
 
         const epsilon = 1e-6;
-        const clampedX = clamp(gridX, 0, WALK_SIZE - epsilon);
-        const clampedZ = clamp(gridZ, 0, WALK_SIZE - epsilon);
+        const clampedX = clamp(gridX, 0, walkSize - epsilon);
+        const clampedZ = clamp(gridZ, 0, walkSize - epsilon);
         const ix = Math.floor(clampedX);
         const iz = Math.floor(clampedZ);
         const fx = clampedX - ix;
         const fz = clampedZ - iz;
 
-        const h00 = this.vertexHeights?.[iz]?.[ix] ?? 0;
-        const h10 = this.vertexHeights?.[iz]?.[ix + 1] ?? h00;
-        const h01 = this.vertexHeights?.[iz + 1]?.[ix] ?? h00;
-        const h11 = this.vertexHeights?.[iz + 1]?.[ix + 1] ?? h10;
+        const heights = this.vertexHeights ?? [];
+        const h00 = heights?.[iz]?.[ix] ?? 0;
+        const h10 = heights?.[iz]?.[ix + 1] ?? h00;
+        const h01 = heights?.[iz + 1]?.[ix] ?? h00;
+        const h11 = heights?.[iz + 1]?.[ix + 1] ?? h10;
 
         const north = h00 * (1 - fx) + h10 * fx;
         const south = h01 * (1 - fx) + h11 * fx;

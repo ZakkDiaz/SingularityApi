@@ -28,15 +28,17 @@ const baselineStats = {
     experienceToNext: 80,
     attackSpeed: 1.0,
     moveSpeed: 12,
-    unspentStatPoints: 0
+    unspentStatPoints: 0,
+    isEthereal: false
 };
 
 let latestStats = { ...baselineStats };
 
-const DEFAULT_UPGRADE_OPTIONS = [
+const STAT_UPGRADE_POOL = [
     { id: 'attack', name: 'Power', description: '+2 attack' },
     { id: 'maxHealth', name: 'Vitality', description: '+10 max health' },
-    { id: 'attackSpeed', name: 'Finesse', description: '10% faster attacks' }
+    { id: 'attackSpeed', name: 'Finesse', description: '10% faster attacks' },
+    { id: 'moveSpeed', name: 'Swiftness', description: '+1 move speed' }
 ];
 
 function init() {
@@ -88,6 +90,10 @@ function init() {
             network.playerId = state.playerId;
             world.setLocalPlayerId(state.playerId);
             player.setPlayerId(state.playerId);
+
+            if (state.terrain) {
+                world.applyTerrainSnapshot(state.terrain);
+            }
 
             log(`Joined world as ${state.playerId}`);
 
@@ -230,7 +236,8 @@ function updateStatsHud(stats) {
         experienceToNext: stats?.experienceToNext ?? baselineStats.experienceToNext,
         attackSpeed: stats?.attackSpeed ?? baselineStats.attackSpeed,
         moveSpeed: stats?.moveSpeed ?? baselineStats.moveSpeed,
-        unspentStatPoints: stats?.unspentStatPoints ?? baselineStats.unspentStatPoints
+        unspentStatPoints: stats?.unspentStatPoints ?? baselineStats.unspentStatPoints,
+        isEthereal: Boolean(stats?.isEthereal ?? baselineStats.isEthereal)
     };
 
     const level = Math.round(normalized.level);
@@ -266,7 +273,8 @@ function updateStatsHud(stats) {
         experienceToNext,
         attackSpeed,
         moveSpeed,
-        unspentStatPoints: Math.max(0, Math.round(Number(normalized.unspentStatPoints ?? 0)))
+        unspentStatPoints: Math.max(0, Math.round(Number(normalized.unspentStatPoints ?? 0))),
+        isEthereal: normalized.isEthereal
     };
 
     if (player && typeof player.setStats === 'function') {
@@ -365,16 +373,30 @@ function handleUpgradeAvailability(options, stats = latestStats) {
     }
 }
 
+function pickRandomStatOptions(count = 3) {
+    const working = Array.from(STAT_UPGRADE_POOL);
+    const picks = [];
+    while (working.length > 0 && picks.length < count) {
+        const index = Math.floor(Math.random() * working.length);
+        picks.push(working.splice(index, 1)[0]);
+    }
+    return picks;
+}
+
 function showUpgradeOptions(options, remainingPoints) {
     if (!upgradeUi?.overlay || !upgradeUi?.options || !upgradeUi?.remaining) {
         return;
     }
 
-    const list = Array.isArray(options) && options.length > 0 ? options : DEFAULT_UPGRADE_OPTIONS;
+    const list = Array.isArray(options) && options.length > 0
+        ? options.slice(0, 3)
+        : pickRandomStatOptions(3);
     upgradeSelectionPending = false;
     upgradeUi.overlay.dataset.visible = 'true';
     upgradeUi.overlay.dataset.processing = 'false';
     upgradeUi.options.innerHTML = '';
+
+    player?.setMenuState?.('upgrade', true);
 
     list.forEach(option => {
         const id = option?.id ?? option?.statId;
@@ -421,6 +443,7 @@ function hideUpgradeOptions() {
     if (upgradeUi.hint) {
         upgradeUi.hint.textContent = '';
     }
+    player?.setMenuState?.('upgrade', false);
 }
 
 function chooseUpgrade(statId, label) {
@@ -474,6 +497,8 @@ function showWeaponChoices(options) {
     weaponUi.overlay.dataset.processing = 'false';
     weaponUi.options.innerHTML = '';
 
+    player?.setMenuState?.('weapon', true);
+
     list.slice(0, 3).forEach(option => {
         const id = option?.id ?? option?.abilityId;
         if (!id) {
@@ -519,6 +544,7 @@ function hideWeaponChoices() {
     if (weaponUi.hint) {
         weaponUi.hint.textContent = '';
     }
+    player?.setMenuState?.('weapon', false);
 }
 
 function chooseWeapon(abilityId, label) {

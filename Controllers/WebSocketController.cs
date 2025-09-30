@@ -342,10 +342,7 @@ public static class WebSocketController
             statsSnapshot = World.BuildStatsSnapshot(current);
             abilitySnapshots = World.BuildAbilitySnapshots(current);
             weaponChoices = World.BuildWeaponChoices(current);
-            if (statsSnapshot.UnspentStatPoints > 0)
-            {
-                upgradeOptions = World.StatUpgradeDefinitions;
-            }
+            upgradeOptions = World.BuildStatUpgradeOptions(current);
         }
 
         var payload = new
@@ -358,7 +355,8 @@ public static class WebSocketController
             stats = statsSnapshot,
             abilities = abilitySnapshots,
             upgradeOptions,
-            weaponChoices
+            weaponChoices,
+            terrain = World.BuildTerrainSnapshot()
         };
 
         await SendJsonAsync(socket, payload, cancel);
