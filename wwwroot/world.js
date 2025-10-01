@@ -41,11 +41,13 @@ export class World {
         this.renderer.setPixelRatio(window.devicePixelRatio ?? 1);
 
         const existingCanvas = document.getElementById('gameCanvas');
-        if (existingCanvas && existingCanvas.parentElement) {
-            existingCanvas.parentElement.removeChild(existingCanvas);
-        }
         this.renderer.domElement.id = 'gameCanvas';
-        document.body.appendChild(this.renderer.domElement);
+
+        if (existingCanvas && existingCanvas.parentElement) {
+            existingCanvas.replaceWith(this.renderer.domElement);
+        } else {
+            document.body.prepend(this.renderer.domElement);
+        }
 
         const aspect = window.innerWidth / window.innerHeight;
         this.camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 400);
