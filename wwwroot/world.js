@@ -60,9 +60,11 @@ export class World {
         this.minCameraDistance = 12;
         this.maxCameraDistance = 80;
         this.headingListener = null;
-        this.pointerLocked = false;
         this.controlSuspended = false;
-        this.pointerLockDesired = true;
+        this.activePointerId = null;
+        this.activeRotationMode = null;
+        this.lastPointerPosition = null;
+        this.hasManualCameraControl = false;
 
         this.walkSize = DEFAULT_WALK_SIZE;
         this.tileSize = DEFAULT_TILE_SIZE;
@@ -118,34 +120,69 @@ export class World {
             return;
         }
 
-        canvas.addEventListener('click', () => {
+        const handlePointerDown = (event) => {
             if (this.controlSuspended) {
                 return;
             }
-            this.pointerLockDesired = true;
-            if (canvas.requestPointerLock) {
-                canvas.requestPointerLock();
-            }
-        });
-
-        document.addEventListener('pointerlockchange', () => {
-            this.pointerLocked = document.pointerLockElement === canvas;
-            if (!this.pointerLocked && !this.controlSuspended) {
-                this.pointerLockDesired = false;
-            }
-        });
-
-        document.addEventListener('mousemove', (event) => {
-            if (!this.pointerLocked || this.controlSuspended) {
+            if (event.button !== 0 && event.button !== 2) {
                 return;
             }
-            const yawDelta = (event.movementX ?? 0) * 0.0025;
-            const pitchDelta = (event.movementY ?? 0) * 0.0025;
-            this.cameraYaw -= yawDelta;
-            this.cameraPitch = clamp(this.cameraPitch - pitchDelta, -1.3, 0.35);
-            if (typeof this.headingListener === 'function') {
+            event.preventDefault();
+            if (this.activePointerId !== null) {
+                this.stopActivePointerRotation();
+            }
+            this.activePointerId = event.pointerId;
+            this.activeRotationMode = event.button === 2 ? 'player' : 'camera';
+            this.lastPointerPosition = { x: event.clientX, y: event.clientY };
+            this.hasManualCameraControl = true;
+            canvas.setPointerCapture?.(event.pointerId);
+            canvas.style.cursor = 'none';
+        };
+
+        const handlePointerMove = (event) => {
+            if (this.controlSuspended) {
+                return;
+            }
+            if (this.activePointerId !== event.pointerId || !this.activeRotationMode) {
+                return;
+            }
+            event.preventDefault();
+            const last = this.lastPointerPosition ?? { x: event.clientX, y: event.clientY };
+            const deltaX = (event.clientX ?? last.x) - last.x;
+            const deltaY = (event.clientY ?? last.y) - last.y;
+            this.lastPointerPosition = { x: event.clientX ?? last.x, y: event.clientY ?? last.y };
+            const yawDelta = deltaX * 0.0025;
+            const pitchDelta = deltaY * 0.0025;
+            if (Number.isFinite(yawDelta)) {
+                this.cameraYaw -= yawDelta;
+            }
+            if (Number.isFinite(pitchDelta)) {
+                this.cameraPitch = clamp(this.cameraPitch - pitchDelta, -1.3, 0.35);
+            }
+            if (this.activeRotationMode === 'player' && typeof this.headingListener === 'function') {
                 this.headingListener(this.cameraYaw);
             }
+        };
+
+        const handlePointerUp = (event) => {
+            if (this.activePointerId !== event.pointerId) {
+                return;
+            }
+            this.stopActivePointerRotation();
+        };
+
+        canvas.addEventListener('pointerdown', handlePointerDown);
+        canvas.addEventListener('pointermove', handlePointerMove);
+        canvas.addEventListener('pointerup', handlePointerUp);
+        canvas.addEventListener('pointercancel', handlePointerUp);
+        canvas.addEventListener('lostpointercapture', (event) => {
+            if (this.activePointerId === event.pointerId) {
+                this.stopActivePointerRotation();
+            }
+        });
+        window.addEventListener('pointerup', handlePointerUp);
+        canvas.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
         });
 
         canvas.addEventListener('wheel', (event) => {
@@ -156,6 +193,19 @@ export class World {
             const delta = (event.deltaY ?? 0) * 0.05;
             this.cameraDistance = clamp(this.cameraDistance + delta, this.minCameraDistance, this.maxCameraDistance);
         }, { passive: false });
+    }
+
+    stopActivePointerRotation() {
+        const canvas = this.renderer?.domElement;
+        if (this.activePointerId !== null && canvas?.hasPointerCapture?.(this.activePointerId)) {
+            canvas.releasePointerCapture(this.activePointerId);
+        }
+        this.activePointerId = null;
+        this.activeRotationMode = null;
+        this.lastPointerPosition = null;
+        if (canvas) {
+            canvas.style.cursor = '';
+        }
     }
 
     setHeadingListener(listener) {
@@ -247,42 +297,18 @@ export class World {
         this.scene.add(this.walkMesh);
     }
 
-    requestPointerLockIfPossible() {
-        if (this.controlSuspended) {
-            return;
-        }
-        const canvas = this.renderer?.domElement;
-        if (!canvas || document.pointerLockElement === canvas) {
-            return;
-        }
-        if (canvas.requestPointerLock) {
-            canvas.requestPointerLock();
-        }
-    }
-
     setControlSuspended(suspended) {
         const shouldSuspend = Boolean(suspended);
         if (this.controlSuspended === shouldSuspend) {
-            if (!shouldSuspend && this.pointerLockDesired && !this.pointerLocked) {
-                window.setTimeout(() => this.requestPointerLockIfPossible(), 50);
-            }
             return;
         }
 
         this.controlSuspended = shouldSuspend;
         if (shouldSuspend) {
-            this.pointerLockDesired = false;
-            if (document.pointerLockElement === this.renderer?.domElement) {
-                document.exitPointerLock?.();
-            }
-            if (document?.body) {
-                document.body.style.cursor = 'default';
-            }
-        } else {
-            this.pointerLockDesired = true;
-            window.setTimeout(() => this.requestPointerLockIfPossible(), 50);
-            if (document?.body) {
-                document.body.style.cursor = '';
+            this.stopActivePointerRotation();
+            this.hasManualCameraControl = false;
+            if (this.renderer?.domElement) {
+                this.renderer.domElement.style.cursor = '';
             }
         }
     }
@@ -472,7 +498,7 @@ export class World {
         this.localPlayerMesh.position.set(x, meshY, z);
         this.localPlayerMesh.rotation.y = heading;
         this.cameraTarget.set(x, actualY + 1.8, z);
-        if (!this.pointerLocked) {
+        if (!this.hasManualCameraControl) {
             this.cameraYaw = heading;
         }
     }
