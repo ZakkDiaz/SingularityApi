@@ -6,12 +6,12 @@ const KEY_BINDINGS = {
     ArrowUp: { axis: 'forward', value: 1 },
     KeyS: { axis: 'forward', value: -1 },
     ArrowDown: { axis: 'forward', value: -1 },
-    KeyQ: { axis: 'strafe', value: -1 },
-    KeyE: { axis: 'strafe', value: 1 },
-    KeyA: { axis: 'turn', value: -1 },
-    ArrowLeft: { axis: 'turn', value: -1 },
-    KeyD: { axis: 'turn', value: 1 },
-    ArrowRight: { axis: 'turn', value: 1 }
+    KeyQ: { axis: 'strafe', value: 1 },
+    KeyE: { axis: 'strafe', value: -1 },
+    KeyA: { axis: 'turn', value: 1 },
+    ArrowLeft: { axis: 'turn', value: 1 },
+    KeyD: { axis: 'turn', value: -1 },
+    ArrowRight: { axis: 'turn', value: -1 }
 };
 
 const TURN_SPEED_RADIANS = 2.6;
@@ -63,11 +63,43 @@ export class Player {
         this.stats = { attackSpeed: 1, moveSpeed: this.baseMoveSpeed, unspentStatPoints: 0, isEthereal: false };
         this.turnSpeed = TURN_SPEED_RADIANS;
         this.maxStepHeight = Math.max(0.1, this.world?.getMaxStepHeight?.() ?? DEFAULT_MAX_STEP_HEIGHT);
+        this.lastInputs = { forward: 0, strafe: 0, turn: 0 };
+        this.baseDebugMetrics = {
+            headingRadians: 0,
+            headingDegrees: 0,
+            cameraYawRadians: 0,
+            cameraYawDegrees: 0,
+            positionX: this.position.x,
+            positionY: this.position.y,
+            positionZ: this.position.z,
+            velocityX: 0,
+            velocityZ: 0,
+            speed: 0,
+            verticalVelocity: 0,
+            groundHeight: 0,
+            contactHeight: this.position.y,
+            groundDistance: PLAYER_HEIGHT_OFFSET,
+            isGrounded: true,
+            isEthereal: false,
+            maxStepHeight: this.maxStepHeight,
+            inputForward: 0,
+            inputStrafe: 0,
+            inputTurn: 0
+        };
 
         this.initInputListeners();
         this.world.setHeadingListener?.((heading) => this.setHeadingFromCamera(heading));
-        const initialGround = this.world.getGroundHeight(0, 0) + PLAYER_HEIGHT_OFFSET;
+        const initialSurface = this.world.getGroundHeight(0, 0);
+        const initialGround = initialSurface + PLAYER_HEIGHT_OFFSET;
         this.position.y = initialGround;
+        this.refreshBaseDebugMetrics({
+            forwardInput: 0,
+            strafeInput: 0,
+            turnInput: 0,
+            surfaceHeight: initialSurface,
+            contactHeight: initialGround
+        });
+        this.debugInfo = this.createDebugInfo();
         this.lastSentSnapshot = { x: this.position.x, y: this.position.y, z: this.position.z, heading: this.heading };
         this.world.updateLocalPlayer({ x: this.position.x, y: this.position.y, z: this.position.z, heading: this.heading });
     }
@@ -145,6 +177,11 @@ export class Player {
         const startX = this.position.x;
         const startZ = this.position.z;
 
+        let turnInput = 0;
+        let forwardInput = 0;
+        let strafeInput = 0;
+        this.lastInputs = { forward: 0, strafe: 0, turn: 0 };
+
         if (this.isEthereal) {
             this.jumpRequested = false;
         } else {
@@ -153,14 +190,15 @@ export class Player {
                 this.maxStepHeight = stepFromWorld;
             }
 
-            const turnInput = this.getAxisValue('turn');
+            turnInput = this.getAxisValue('turn');
             if (turnInput !== 0 && delta > 0) {
-                this.heading = normalizeAngle(this.heading + turnInput * this.turnSpeed * delta);
+                this.heading = normalizeAngle(this.heading - turnInput * this.turnSpeed * delta);
                 this.world.setCameraYaw?.(this.heading);
             }
 
-            const forwardInput = this.getAxisValue('forward');
-            const strafeInput = this.getAxisValue('strafe');
+            forwardInput = this.getAxisValue('forward');
+            strafeInput = this.getAxisValue('strafe');
+            this.lastInputs = { forward: forwardInput, strafe: strafeInput, turn: turnInput };
             let desiredVelX = 0;
             let desiredVelZ = 0;
             const magnitude = Math.hypot(strafeInput, forwardInput);
@@ -173,8 +211,8 @@ export class Player {
                 const cosYaw = Math.cos(yaw);
                 const forwardX = sinYaw;
                 const forwardZ = cosYaw;
-                const rightX = cosYaw;
-                const rightZ = -sinYaw;
+                const rightX = -cosYaw;
+                const rightZ = sinYaw;
                 const moveSpeed = Math.max(0.1, this.moveSpeed ?? this.baseMoveSpeed);
                 const dirX = forwardX * normForward + rightX * normStrafe;
                 const dirZ = forwardZ * normForward + rightZ * normStrafe;
@@ -200,7 +238,10 @@ export class Player {
             this.position.y += this.verticalVelocity * delta;
         }
 
-        const groundY = this.world.getGroundHeight(this.position.x, this.position.z) + PLAYER_HEIGHT_OFFSET;
+        const surfaceHeight = typeof this.world?.getGroundHeight === 'function'
+            ? this.world.getGroundHeight(this.position.x, this.position.z)
+            : 0;
+        const groundY = surfaceHeight + PLAYER_HEIGHT_OFFSET;
         if (this.isEthereal) {
             this.position.y = groundY;
             this.verticalVelocity = 0;
@@ -226,6 +267,14 @@ export class Player {
             this.velocity.x = Number.isFinite(velX) ? velX : 0;
             this.velocity.z = Number.isFinite(velZ) ? velZ : 0;
         }
+
+        this.refreshBaseDebugMetrics({
+            forwardInput: this.lastInputs.forward,
+            strafeInput: this.lastInputs.strafe,
+            turnInput: this.lastInputs.turn,
+            surfaceHeight,
+            contactHeight: groundY
+        });
 
         this.world.updateLocalPlayer({
             x: this.position.x,
@@ -518,6 +567,27 @@ export class Player {
             z: this.position.z,
             heading: this.heading
         });
+        const surfaceHeight = typeof this.world?.getGroundHeight === 'function'
+            ? this.world.getGroundHeight(this.position.x, this.position.z)
+            : 0;
+        this.refreshBaseDebugMetrics({
+            forwardInput: this.lastInputs.forward,
+            strafeInput: this.lastInputs.strafe,
+            turnInput: this.lastInputs.turn,
+            surfaceHeight,
+            contactHeight: surfaceHeight + PLAYER_HEIGHT_OFFSET
+        });
+        if (this.debugInfo) {
+            this.debugInfo = this.createDebugInfo({
+                abilityId: this.debugInfo.abilityId,
+                abilityName: this.debugInfo.abilityName,
+                abilityRange: this.debugInfo.abilityRange,
+                nearestMobId: this.debugInfo.nearestMobId,
+                nearestDistance: this.debugInfo.nearestDistance,
+                targetId: this.debugInfo.targetId,
+                targetDistance: this.debugInfo.targetDistance
+            });
+        }
     }
 
     setAbilitySnapshots(snapshots = []) {
@@ -613,10 +683,60 @@ export class Player {
         }
     }
 
+    refreshBaseDebugMetrics({
+        forwardInput = 0,
+        strafeInput = 0,
+        turnInput = 0,
+        surfaceHeight = 0,
+        contactHeight = surfaceHeight + PLAYER_HEIGHT_OFFSET
+    } = {}) {
+        const sanitizedSurface = Number.isFinite(surfaceHeight) ? surfaceHeight : 0;
+        const sanitizedContact = Number.isFinite(contactHeight)
+            ? contactHeight
+            : sanitizedSurface + PLAYER_HEIGHT_OFFSET;
+        const headingRad = normalizeAngle(this.heading);
+        const headingDeg = ((headingRad * 180) / Math.PI + 360) % 360;
+        const cameraYawValue = typeof this.world?.cameraYaw === 'number' ? this.world.cameraYaw : headingRad;
+        const cameraYawRad = normalizeAngle(cameraYawValue);
+        const cameraYawDeg = ((cameraYawRad * 180) / Math.PI + 360) % 360;
+        const velocityX = Number.isFinite(this.velocity.x) ? this.velocity.x : 0;
+        const velocityZ = Number.isFinite(this.velocity.z) ? this.velocity.z : 0;
+        const speed = Math.hypot(velocityX, velocityZ);
+        const verticalVelocity = Number.isFinite(this.verticalVelocity) ? this.verticalVelocity : 0;
+        const groundDistance = Math.max(0, this.position.y - sanitizedContact);
+        const safeForward = Number.isFinite(forwardInput) ? forwardInput : 0;
+        const safeStrafe = Number.isFinite(strafeInput) ? strafeInput : 0;
+        const safeTurn = Number.isFinite(turnInput) ? turnInput : 0;
+
+        this.baseDebugMetrics = {
+            headingRadians: headingRad,
+            headingDegrees: headingDeg,
+            cameraYawRadians: cameraYawRad,
+            cameraYawDegrees: cameraYawDeg,
+            positionX: this.position.x,
+            positionY: this.position.y,
+            positionZ: this.position.z,
+            velocityX,
+            velocityZ,
+            speed,
+            verticalVelocity,
+            groundHeight: sanitizedSurface,
+            contactHeight: sanitizedContact,
+            groundDistance,
+            isGrounded: this.isGrounded,
+            isEthereal: this.isEthereal,
+            maxStepHeight: this.maxStepHeight,
+            inputForward: safeForward,
+            inputStrafe: safeStrafe,
+            inputTurn: safeTurn
+        };
+    }
+
     createDebugInfo(overrides = {}) {
         return {
+            ...this.baseDebugMetrics,
             abilityId: null,
-            abilityName: '',
+            abilityName: '—',
             abilityRange: null,
             targetId: null,
             targetDistance: null,
@@ -627,6 +747,9 @@ export class Player {
     }
 
     getDebugSnapshot() {
+        if (!this.debugInfo) {
+            return { ...this.createDebugInfo() };
+        }
         return { ...this.debugInfo };
     }
 }
