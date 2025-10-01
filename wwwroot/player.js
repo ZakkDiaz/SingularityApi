@@ -6,12 +6,10 @@ const KEY_BINDINGS = {
     ArrowUp: { axis: 'forward', value: 1 },
     KeyS: { axis: 'forward', value: -1 },
     ArrowDown: { axis: 'forward', value: -1 },
-    KeyQ: { axis: 'strafe', value: -1 },
-    KeyE: { axis: 'strafe', value: 1 },
-    KeyA: { axis: 'turn', value: -1 },
-    ArrowLeft: { axis: 'turn', value: -1 },
-    KeyD: { axis: 'turn', value: 1 },
-    ArrowRight: { axis: 'turn', value: 1 }
+    KeyA: { axis: 'strafe', value: -1 },
+    ArrowLeft: { axis: 'strafe', value: -1 },
+    KeyD: { axis: 'strafe', value: 1 },
+    ArrowRight: { axis: 'strafe', value: 1 }
 };
 
 const TURN_SPEED_RADIANS = 2.6;
