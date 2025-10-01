@@ -50,6 +50,7 @@ public sealed class GameWorld : IDisposable
     private const int WalkSize = 10;
     private const double TileSize = 40.0;
     private const double HeightStep = TileSize * 0.5;
+    private const double MaxTerrainStepHeight = HeightStep * 0.75;
     private const int MinWalkDepth = -4;
     private const int MaxWalkDepth = 5;
     private readonly Timer _worldTimer;
@@ -474,15 +475,19 @@ public sealed class GameWorld : IDisposable
             return false;
         }
 
-        var groundY = SampleTerrainHeight(x, z);
-        var maxHeight = groundY + 60.0;
-        var minHeight = groundY - 20.0;
-        y = Math.Clamp(y, minHeight, maxHeight);
-
         lock (state)
         {
-            var dx = x - state.X;
-            var dz = z - state.Z;
+            var now = DateTime.UtcNow;
+            var previousX = state.X;
+            var previousZ = state.Z;
+            var previousUpdate = state.LastUpdate;
+            var currentGround = SampleTerrainHeight(previousX, previousZ);
+
+            var targetX = x;
+            var targetZ = z;
+
+            var dx = targetX - previousX;
+            var dz = targetZ - previousZ;
             var distanceSq = dx * dx + dz * dz;
             if (distanceSq > _options.MaxMoveDistanceSquared)
             {
@@ -490,23 +495,54 @@ public sealed class GameWorld : IDisposable
                 if (distance > 0)
                 {
                     var scale = Math.Sqrt(_options.MaxMoveDistanceSquared) / distance;
-                    x = state.X + dx * scale;
-                    z = state.Z + dz * scale;
+                    targetX = previousX + dx * scale;
+                    targetZ = previousZ + dz * scale;
                 }
                 else
                 {
-                    x = state.X;
-                    z = state.Z;
+                    targetX = previousX;
+                    targetZ = previousZ;
                 }
             }
 
-            state.X = x;
-            state.Y = y;
-            state.Z = z;
-            state.Heading = heading;
-            state.VelocityX = velocityX;
-            state.VelocityZ = velocityZ;
-            state.LastUpdate = DateTime.UtcNow;
+            var targetGround = SampleTerrainHeight(targetX, targetZ);
+            if (Math.Abs(targetGround - currentGround) > MaxTerrainStepHeight)
+            {
+                var resolved = ResolveTerrainStep(previousX, previousZ, targetX, targetZ, currentGround);
+                targetX = resolved.X;
+                targetZ = resolved.Z;
+                targetGround = resolved.GroundHeight;
+            }
+
+            var maxHeight = targetGround + 60.0;
+            var minHeight = targetGround - 20.0;
+            var adjustedY = Math.Clamp(y, minHeight, maxHeight);
+            var minimumSupported = targetGround + PlayerHeightOffset;
+            if (adjustedY < minimumSupported)
+            {
+                adjustedY = minimumSupported;
+            }
+
+            state.X = targetX;
+            state.Y = adjustedY;
+            state.Z = targetZ;
+            state.Heading = NormalizeAngle(heading);
+
+            var elapsedSeconds = (now - previousUpdate).TotalSeconds;
+            if (elapsedSeconds > 1e-6)
+            {
+                var actualVelX = (state.X - previousX) / elapsedSeconds;
+                var actualVelZ = (state.Z - previousZ) / elapsedSeconds;
+                state.VelocityX = double.IsFinite(actualVelX) ? actualVelX : 0;
+                state.VelocityZ = double.IsFinite(actualVelZ) ? actualVelZ : 0;
+            }
+            else
+            {
+                state.VelocityX = double.IsFinite(velocityX) ? velocityX : 0;
+                state.VelocityZ = double.IsFinite(velocityZ) ? velocityZ : 0;
+            }
+
+            state.LastUpdate = now;
             snapshot = CreatePlayerSnapshot(state);
         }
 
@@ -2043,9 +2079,85 @@ public sealed class GameWorld : IDisposable
         var h01 = _vertexHeights[iz + 1, ix];
         var h11 = _vertexHeights[iz + 1, ix + 1];
 
-        var north = h00 * (1 - fx) + h10 * fx;
-        var south = h01 * (1 - fx) + h11 * fx;
-        return north * (1 - fz) + south * fz;
+        if (fx + fz <= 1.0)
+        {
+            var w00 = 1.0 - fx - fz;
+            var w10 = fx;
+            var w01 = fz;
+            return h00 * w00 + h10 * w10 + h01 * w01;
+        }
+
+        var w10Second = 1.0 - fz;
+        var w11 = fx + fz - 1.0;
+        var w01Second = 1.0 - fx;
+        return h10 * w10Second + h11 * w11 + h01 * w01Second;
+    }
+
+    private (double X, double Z, double GroundHeight) ResolveTerrainStep(double currentX, double currentZ, double targetX, double targetZ, double currentGround)
+    {
+        var dx = targetX - currentX;
+        var dz = targetZ - currentZ;
+        var distance = Math.Sqrt(dx * dx + dz * dz);
+        if (distance <= 1e-6)
+        {
+            return (currentX, currentZ, currentGround);
+        }
+
+        var low = 0.0;
+        var high = 1.0;
+        var best = 0.0;
+        for (var i = 0; i < 6; i++)
+        {
+            var mid = (low + high) * 0.5;
+            var testX = currentX + dx * mid;
+            var testZ = currentZ + dz * mid;
+            var testGround = SampleTerrainHeight(testX, testZ);
+            if (Math.Abs(testGround - currentGround) <= MaxTerrainStepHeight)
+            {
+                best = mid;
+                low = mid;
+            }
+            else
+            {
+                high = mid;
+            }
+        }
+
+        if (best <= 1e-3)
+        {
+            return (currentX, currentZ, currentGround);
+        }
+
+        var finalX = currentX + dx * best;
+        var finalZ = currentZ + dz * best;
+        var finalGround = SampleTerrainHeight(finalX, finalZ);
+        if (Math.Abs(finalGround - currentGround) > MaxTerrainStepHeight + 0.01)
+        {
+            return (currentX, currentZ, currentGround);
+        }
+
+        return (finalX, finalZ, finalGround);
+    }
+
+    private static double NormalizeAngle(double angle)
+    {
+        if (!double.IsFinite(angle))
+        {
+            return 0;
+        }
+
+        const double twoPi = Math.PI * 2;
+        var normalized = angle % twoPi;
+        if (normalized <= -Math.PI)
+        {
+            normalized += twoPi;
+        }
+        else if (normalized > Math.PI)
+        {
+            normalized -= twoPi;
+        }
+
+        return normalized;
     }
 
     public void Dispose()

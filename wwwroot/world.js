@@ -95,6 +95,8 @@ export class World {
         this.highlightMesh.visible = false;
         this.scene.add(this.highlightMesh);
 
+        this.debugHelpers = this.createDebugHelpers();
+
         window.addEventListener('resize', () => this.handleResize());
         this.handleResize();
         this.initCameraControls();
@@ -326,9 +328,10 @@ export class World {
         for (const entry of this.remotePlayers.values()) {
             if (entry?.mesh) {
                 const { x, z } = entry.mesh.position;
-                const groundY = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
+                const surfaceY = this.getGroundHeight(x, z);
+                const contactHeight = surfaceY + PLAYER_HEIGHT_OFFSET;
                 const offset = typeof entry.heightOffset === 'number' ? Math.max(0, entry.heightOffset) : 0;
-                entry.mesh.position.y = groundY + offset;
+                entry.mesh.position.y = contactHeight + offset - PLAYER_HEIGHT_OFFSET;
             }
         }
 
@@ -422,15 +425,49 @@ export class World {
         return mesh;
     }
 
+    createDebugHelpers() {
+        const group = new THREE.Group();
+        group.visible = false;
+        group.name = 'playerDebugHelpers';
+
+        const headingGeometry = new THREE.BufferGeometry();
+        headingGeometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 1], 3));
+        const headingMaterial = new THREE.LineBasicMaterial({ color: 0xffc86b });
+        const headingLine = new THREE.Line(headingGeometry, headingMaterial);
+        headingLine.frustumCulled = false;
+        group.add(headingLine);
+
+        const groundGeometry = new THREE.BufferGeometry();
+        groundGeometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, -1, 0], 3));
+        const groundMaterial = new THREE.LineBasicMaterial({ color: 0x6ecbff });
+        const groundLine = new THREE.Line(groundGeometry, groundMaterial);
+        groundLine.frustumCulled = false;
+        group.add(groundLine);
+
+        const groundPoint = new THREE.Mesh(
+            new THREE.SphereGeometry(0.25, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0x6ecbff })
+        );
+        groundPoint.position.y = -1;
+        groundPoint.frustumCulled = false;
+        group.add(groundPoint);
+
+        this.scene.add(group);
+
+        return { group, headingLine, groundLine, groundPoint };
+    }
+
     setLocalPlayerId(id) {
         this.localPlayerId = id;
     }
 
     updateLocalPlayer({ x = 0, y = null, z = 0, heading = 0 } = {}) {
-        const groundY = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
-        const actualY = typeof y === 'number' ? Math.max(groundY, y) : groundY;
+        const surfaceY = this.getGroundHeight(x, z);
+        const contactHeight = surfaceY + PLAYER_HEIGHT_OFFSET;
+        const actualY = typeof y === 'number' ? Math.max(contactHeight, y) : contactHeight;
         this.localPlayer = { x, y: actualY, z, heading };
-        this.localPlayerMesh.position.set(x, actualY, z);
+        const meshY = actualY - PLAYER_HEIGHT_OFFSET;
+        this.localPlayerMesh.position.set(x, meshY, z);
         this.localPlayerMesh.rotation.y = heading;
         this.cameraTarget.set(x, actualY + 1.8, z);
         if (!this.pointerLocked) {
@@ -465,11 +502,12 @@ export class World {
         const x = snapshot.x ?? 0;
         const z = snapshot.z ?? 0;
         const heading = snapshot.heading ?? 0;
-        const groundY = this.getGroundHeight(x, z) + PLAYER_HEIGHT_OFFSET;
+        const surfaceY = this.getGroundHeight(x, z);
+        const contactHeight = surfaceY + PLAYER_HEIGHT_OFFSET;
         const serverY = typeof snapshot.y === 'number' ? snapshot.y : null;
-        const offset = serverY !== null ? Math.max(0, serverY - groundY) : 0;
-        entry.heightOffset = offset;
-        entry.mesh.position.set(x, groundY + offset, z);
+        const resolvedY = serverY !== null ? Math.max(contactHeight, serverY) : contactHeight;
+        entry.heightOffset = resolvedY - contactHeight;
+        entry.mesh.position.set(x, resolvedY - PLAYER_HEIGHT_OFFSET, z);
         entry.mesh.rotation.y = heading;
     }
 
@@ -581,6 +619,67 @@ export class World {
 
     setDebugMode(enabled) {
         this.debugMode = Boolean(enabled);
+        if (!this.debugMode && this.debugHelpers?.group) {
+            this.debugHelpers.group.visible = false;
+        } else if (this.debugMode) {
+            this.updateDebugHelpers();
+        }
+    }
+
+    updateDebugHelpers() {
+        const helpers = this.debugHelpers;
+        if (!helpers || !helpers.group) {
+            return;
+        }
+
+        if (!this.debugMode || !this.debugInfo) {
+            helpers.group.visible = false;
+            return;
+        }
+
+        const info = this.debugInfo;
+        const x = Number.isFinite(info.positionX) ? info.positionX : (this.localPlayer?.x ?? 0);
+        const y = Number.isFinite(info.positionY) ? info.positionY : (this.localPlayer?.y ?? PLAYER_HEIGHT_OFFSET);
+        const z = Number.isFinite(info.positionZ) ? info.positionZ : (this.localPlayer?.z ?? 0);
+
+        helpers.group.visible = true;
+        helpers.group.position.set(x, y, z);
+
+        const heading = Number.isFinite(info.headingRadians) ? info.headingRadians : 0;
+        const headingVector = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
+        if (headingVector.lengthSq() > 1e-6) {
+            headingVector.normalize();
+        } else {
+            headingVector.set(0, 0, 1);
+        }
+        const headingPositions = helpers.headingLine.geometry.attributes.position.array;
+        const headingLength = 6;
+        headingPositions[0] = 0;
+        headingPositions[1] = 0;
+        headingPositions[2] = 0;
+        headingPositions[3] = headingVector.x * headingLength;
+        headingPositions[4] = headingVector.y * headingLength;
+        headingPositions[5] = headingVector.z * headingLength;
+        helpers.headingLine.geometry.attributes.position.needsUpdate = true;
+
+        const groundDelta = Number.isFinite(info.groundDistance) ? info.groundDistance : 0;
+        const groundMagnitude = Math.abs(groundDelta);
+        const groundDirection = groundDelta >= 0 ? -1 : 1;
+        const groundPositions = helpers.groundLine.geometry.attributes.position.array;
+        const lineLength = Math.max(groundMagnitude, 0.05);
+        groundPositions[0] = 0;
+        groundPositions[1] = 0;
+        groundPositions[2] = 0;
+        groundPositions[3] = 0;
+        groundPositions[4] = groundDirection * lineLength;
+        groundPositions[5] = 0;
+        helpers.groundLine.geometry.attributes.position.needsUpdate = true;
+
+        helpers.groundPoint.position.set(0, groundDirection * groundMagnitude, 0);
+        helpers.groundPoint.visible = groundMagnitude > 0.01;
+        if (helpers.groundPoint.material?.color) {
+            helpers.groundPoint.material.color.setHex(groundDelta >= 0 ? 0x6ecbff : 0xff6b6b);
+        }
     }
 
     updateWorldTime(timeOfDayFraction) {
@@ -615,7 +714,7 @@ export class World {
 
     render(debugInfo = undefined) {
         if (debugInfo !== undefined) {
-            this.debugInfo = debugInfo;
+            this.debugInfo = debugInfo ? { ...debugInfo } : null;
         }
 
         const now = performance.now();
@@ -649,6 +748,7 @@ export class World {
             this.highlightMesh.visible = false;
         }
 
+        this.updateDebugHelpers();
         this.updateAttacksVisuals();
         this.updateCamera();
         this.renderer.render(this.scene, this.camera);
@@ -800,8 +900,23 @@ export class World {
         const h01 = heights?.[iz + 1]?.[ix] ?? h00;
         const h11 = heights?.[iz + 1]?.[ix + 1] ?? h10;
 
-        const north = h00 * (1 - fx) + h10 * fx;
-        const south = h01 * (1 - fx) + h11 * fx;
-        return north * (1 - fz) + south * fz;
+        if (fx + fz <= 1) {
+            const w00 = 1 - fx - fz;
+            const w10 = fx;
+            const w01 = fz;
+            return h00 * w00 + h10 * w10 + h01 * w01;
+        }
+
+        const w10 = 1 - fz;
+        const w11 = fx + fz - 1;
+        const w01 = 1 - fx;
+        return h10 * w10 + h11 * w11 + h01 * w01;
+    }
+
+    getMaxStepHeight() {
+        const base = (typeof this.heightStep === 'number' && this.heightStep > 0)
+            ? this.heightStep
+            : DEFAULT_HEIGHT_STEP;
+        return Math.max(0.1, base * 0.75);
     }
 }

@@ -13,7 +13,7 @@ let abilityUi;
 let levelToast;
 let levelToastTimer = null;
 let debugElements;
-let debugEnabled = false;
+let debugEnabled = true;
 let upgradeUi;
 let upgradeSelectionPending = false;
 let weaponUi;
@@ -73,6 +73,23 @@ function init() {
     };
     debugElements = {
         panel: document.getElementById('debugPanel'),
+        heading: document.getElementById('debugHeading'),
+        headingRad: document.getElementById('debugHeadingRad'),
+        cameraYaw: document.getElementById('debugCameraYaw'),
+        cameraYawRad: document.getElementById('debugCameraYawRad'),
+        position: document.getElementById('debugPosition'),
+        velocity: document.getElementById('debugVelocity'),
+        speed: document.getElementById('debugSpeed'),
+        verticalVelocity: document.getElementById('debugVerticalVelocity'),
+        groundHeight: document.getElementById('debugGroundHeight'),
+        contactHeight: document.getElementById('debugContactHeight'),
+        groundDistance: document.getElementById('debugGroundDistance'),
+        stepHeight: document.getElementById('debugStepHeight'),
+        grounded: document.getElementById('debugGrounded'),
+        ethereal: document.getElementById('debugEthereal'),
+        inputForward: document.getElementById('debugInputForward'),
+        inputStrafe: document.getElementById('debugInputStrafe'),
+        inputTurn: document.getElementById('debugInputTurn'),
         ability: document.getElementById('debugAbility'),
         range: document.getElementById('debugRange'),
         nearest: document.getElementById('debugNearest'),
@@ -80,6 +97,8 @@ function init() {
         target: document.getElementById('debugTarget'),
         targetDistance: document.getElementById('debugTargetDistance')
     };
+
+    updateDebugPanel(player.getDebugSnapshot());
 
     network = new Network({
         onSocketOpen: () => {
@@ -637,6 +656,39 @@ function updateDebugPanel(info) {
     }
 
     debugElements.panel.dataset.active = debugEnabled ? 'true' : 'false';
+
+    const formatAngle = (value) => Number.isFinite(value) ? `${value.toFixed(1)}°` : '—';
+    const formatRadians = (value) => Number.isFinite(value) ? `${value.toFixed(3)} rad` : '—';
+    const formatVector3 = (x, y, z) => (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))
+        ? `${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}`
+        : '—';
+    const formatVector2 = (x, z) => (Number.isFinite(x) && Number.isFinite(z))
+        ? `${x.toFixed(2)}, ${z.toFixed(2)}`
+        : '—';
+    const formatDistance = (value) => Number.isFinite(value) ? `${value.toFixed(2)} u` : '—';
+    const formatSpeed = (value) => Number.isFinite(value) ? `${value.toFixed(2)} u/s` : '—';
+    const formatSigned = (value) => Number.isFinite(value)
+        ? (value >= 0 ? `+${value.toFixed(2)}` : value.toFixed(2))
+        : '—';
+    const formatBool = (value) => value === true ? 'Yes' : value === false ? 'No' : '—';
+
+    if (debugElements.heading) debugElements.heading.textContent = formatAngle(info?.headingDegrees);
+    if (debugElements.headingRad) debugElements.headingRad.textContent = formatRadians(info?.headingRadians);
+    if (debugElements.cameraYaw) debugElements.cameraYaw.textContent = formatAngle(info?.cameraYawDegrees);
+    if (debugElements.cameraYawRad) debugElements.cameraYawRad.textContent = formatRadians(info?.cameraYawRadians);
+    if (debugElements.position) debugElements.position.textContent = info ? formatVector3(info.positionX, info.positionY, info.positionZ) : '—';
+    if (debugElements.velocity) debugElements.velocity.textContent = info ? formatVector2(info.velocityX, info.velocityZ) : '—';
+    if (debugElements.speed) debugElements.speed.textContent = formatSpeed(info?.speed);
+    if (debugElements.verticalVelocity) debugElements.verticalVelocity.textContent = formatSpeed(info?.verticalVelocity);
+    if (debugElements.groundHeight) debugElements.groundHeight.textContent = formatDistance(info?.groundHeight);
+    if (debugElements.contactHeight) debugElements.contactHeight.textContent = formatDistance(info?.contactHeight);
+    if (debugElements.groundDistance) debugElements.groundDistance.textContent = formatDistance(info?.groundDistance);
+    if (debugElements.stepHeight) debugElements.stepHeight.textContent = formatDistance(info?.maxStepHeight);
+    if (debugElements.grounded) debugElements.grounded.textContent = formatBool(info?.isGrounded);
+    if (debugElements.ethereal) debugElements.ethereal.textContent = formatBool(info?.isEthereal);
+    if (debugElements.inputForward) debugElements.inputForward.textContent = formatSigned(info?.inputForward);
+    if (debugElements.inputStrafe) debugElements.inputStrafe.textContent = formatSigned(info?.inputStrafe);
+    if (debugElements.inputTurn) debugElements.inputTurn.textContent = formatSigned(info?.inputTurn);
 
     const abilityText = info?.abilityName || info?.abilityId || '—';
     const rangeText = typeof info?.abilityRange === 'number' ? `${info.abilityRange.toFixed(1)}m` : '—';

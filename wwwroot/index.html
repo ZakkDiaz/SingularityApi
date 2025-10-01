@@ -200,7 +200,7 @@
             position: absolute;
             right: 28px;
             bottom: 28px;
-            min-width: 220px;
+            min-width: 260px;
             padding: 14px 18px;
             border-radius: 16px;
             background: rgba(12, 18, 28, 0.82);
@@ -236,6 +236,15 @@
         #debugPanel .debug-row span:last-child {
             font-weight: 600;
             opacity: 0.85;
+        }
+
+        #debugPanel .debug-section {
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(148, 255, 214, 0.12);
+            font-weight: 600;
+            opacity: 0.7;
+            letter-spacing: 0.16em;
         }
 
         #upgradeOverlay {
@@ -460,6 +469,25 @@
         <div id="log"></div>
         <div id="debugPanel" data-active="false">
             <div class="debug-header">Debug (F3)</div>
+            <div class="debug-section">Movement</div>
+            <div class="debug-row"><span>Heading</span><span id="debugHeading">—</span></div>
+            <div class="debug-row"><span>Heading (rad)</span><span id="debugHeadingRad">—</span></div>
+            <div class="debug-row"><span>Camera Yaw</span><span id="debugCameraYaw">—</span></div>
+            <div class="debug-row"><span>Camera Yaw (rad)</span><span id="debugCameraYawRad">—</span></div>
+            <div class="debug-row"><span>Position</span><span id="debugPosition">—</span></div>
+            <div class="debug-row"><span>Velocity</span><span id="debugVelocity">—</span></div>
+            <div class="debug-row"><span>Speed</span><span id="debugSpeed">—</span></div>
+            <div class="debug-row"><span>Vertical Vel</span><span id="debugVerticalVelocity">—</span></div>
+            <div class="debug-row"><span>Ground Height</span><span id="debugGroundHeight">—</span></div>
+            <div class="debug-row"><span>Contact Y</span><span id="debugContactHeight">—</span></div>
+            <div class="debug-row"><span>Ground Gap</span><span id="debugGroundDistance">—</span></div>
+            <div class="debug-row"><span>Step Max</span><span id="debugStepHeight">—</span></div>
+            <div class="debug-row"><span>Grounded</span><span id="debugGrounded">—</span></div>
+            <div class="debug-row"><span>Ethereal</span><span id="debugEthereal">—</span></div>
+            <div class="debug-row"><span>Input Forward</span><span id="debugInputForward">—</span></div>
+            <div class="debug-row"><span>Input Strafe</span><span id="debugInputStrafe">—</span></div>
+            <div class="debug-row"><span>Input Turn</span><span id="debugInputTurn">—</span></div>
+            <div class="debug-section">Targets</div>
             <div class="debug-row"><span>Ability</span><span id="debugAbility">—</span></div>
             <div class="debug-row"><span>Range</span><span id="debugRange">—</span></div>
             <div class="debug-row"><span>Nearest</span><span id="debugNearest">None</span></div>
