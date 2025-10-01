@@ -703,7 +703,9 @@ export class Player {
         const velocityZ = Number.isFinite(this.velocity.z) ? this.velocity.z : 0;
         const speed = Math.hypot(velocityX, velocityZ);
         const verticalVelocity = Number.isFinite(this.verticalVelocity) ? this.verticalVelocity : 0;
-        const groundDistance = Math.max(0, this.position.y - sanitizedContact);
+        const groundDistance = Number.isFinite(this.position.y)
+            ? this.position.y - sanitizedContact
+            : 0;
         const safeForward = Number.isFinite(forwardInput) ? forwardInput : 0;
         const safeStrafe = Number.isFinite(strafeInput) ? strafeInput : 0;
         const safeTurn = Number.isFinite(turnInput) ? turnInput : 0;

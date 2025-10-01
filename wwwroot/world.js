@@ -662,19 +662,24 @@ export class World {
         headingPositions[5] = headingVector.z * headingLength;
         helpers.headingLine.geometry.attributes.position.needsUpdate = true;
 
-        const groundGap = Number.isFinite(info.groundDistance) ? Math.max(0, info.groundDistance) : 0;
+        const groundDelta = Number.isFinite(info.groundDistance) ? info.groundDistance : 0;
+        const groundMagnitude = Math.abs(groundDelta);
+        const groundDirection = groundDelta >= 0 ? -1 : 1;
         const groundPositions = helpers.groundLine.geometry.attributes.position.array;
-        const lineLength = Math.max(groundGap, 0.05);
+        const lineLength = Math.max(groundMagnitude, 0.05);
         groundPositions[0] = 0;
         groundPositions[1] = 0;
         groundPositions[2] = 0;
         groundPositions[3] = 0;
-        groundPositions[4] = -lineLength;
+        groundPositions[4] = groundDirection * lineLength;
         groundPositions[5] = 0;
         helpers.groundLine.geometry.attributes.position.needsUpdate = true;
 
-        helpers.groundPoint.position.set(0, -groundGap, 0);
-        helpers.groundPoint.visible = groundGap > 0.01;
+        helpers.groundPoint.position.set(0, groundDirection * groundMagnitude, 0);
+        helpers.groundPoint.visible = groundMagnitude > 0.01;
+        if (helpers.groundPoint.material?.color) {
+            helpers.groundPoint.material.color.setHex(groundDelta >= 0 ? 0x6ecbff : 0xff6b6b);
+        }
     }
 
     updateWorldTime(timeOfDayFraction) {
@@ -895,9 +900,17 @@ export class World {
         const h01 = heights?.[iz + 1]?.[ix] ?? h00;
         const h11 = heights?.[iz + 1]?.[ix + 1] ?? h10;
 
-        const north = h00 * (1 - fx) + h10 * fx;
-        const south = h01 * (1 - fx) + h11 * fx;
-        return north * (1 - fz) + south * fz;
+        if (fx + fz <= 1) {
+            const w00 = 1 - fx - fz;
+            const w10 = fx;
+            const w01 = fz;
+            return h00 * w00 + h10 * w10 + h01 * w01;
+        }
+
+        const w10 = 1 - fz;
+        const w11 = fx + fz - 1;
+        const w01 = 1 - fx;
+        return h10 * w10 + h11 * w11 + h01 * w01;
     }
 
     getMaxStepHeight() {
