@@ -2079,9 +2079,18 @@ public sealed class GameWorld : IDisposable
         var h01 = _vertexHeights[iz + 1, ix];
         var h11 = _vertexHeights[iz + 1, ix + 1];
 
-        var north = h00 * (1 - fx) + h10 * fx;
-        var south = h01 * (1 - fx) + h11 * fx;
-        return north * (1 - fz) + south * fz;
+        if (fx + fz <= 1.0)
+        {
+            var w00 = 1.0 - fx - fz;
+            var w10 = fx;
+            var w01 = fz;
+            return h00 * w00 + h10 * w10 + h01 * w01;
+        }
+
+        var w10Second = 1.0 - fz;
+        var w11 = fx + fz - 1.0;
+        var w01Second = 1.0 - fx;
+        return h10 * w10Second + h11 * w11 + h01 * w01Second;
     }
 
     private (double X, double Z, double GroundHeight) ResolveTerrainStep(double currentX, double currentZ, double targetX, double targetZ, double currentGround)
